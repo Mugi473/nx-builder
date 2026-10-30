@@ -1,0 +1,45 @@
+name: Build NXNative IPA
+
+on:
+  workflow_dispatch:
+    inputs:
+      gdrive_id:
+        description: 'Colle ici le lien Google Drive complet de ton pack.zip'
+        required: true
+        type: string
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 90
+
+    steps:
+      - name: Cloner nxnative
+        uses: actions/checkout@v4
+        with:
+          repository: seedds/nxnative
+
+      - name: Installer les dependances
+        run: |
+          xcodebuild -downloadComponent MetalToolchain || true
+          brew install xcodegen zstd glslang
+          brew install --cask dotnet-sdk
+          python3 -m pip install lz4 capstone fonttools nsz gdown "backports.zstd; python_version < '3.14'"
+
+      - name: Telecharger et extraire les fichiers
+        run: |
+          mkdir -p ~/work_dir/game
+          gdown --fuzzy "${{ inputs.gdrive_id }}" -O ~/work_dir/pack.zip
+          unzip -j ~/work_dir/pack.zip -d ~/work_dir/game
+          ls -la ~/work_dir/game
+
+      - name: Generer le fichier IPA
+        run: |
+          python3 scripts/build_ipa_from_nsp.py ~/work_dir/game -k ~/work_dir/game/prod.keys -o ~/work_dir/Pokemon_BD.ipa
+
+      - name: Uploader le fichier IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: Pokemon-Diamant-IPA
+          path: ~/work_dir/Pokemon_BD.ipa
+          retention-days: 1
