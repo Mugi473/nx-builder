@@ -19,6 +19,14 @@ jobs:
         with:
           repository: seedds/nxnative
 
+      - name:Selectionner Xcode le plus recent et patcher Launcher.swift
+        run: |
+          LATEST_XCODE=$(ls -d /Applications/Xcode*.app | sort -V | tail -n 1)
+          echo "Xcode selectionne : $LATEST_XCODE"
+          sudo xcode-select -s "$LATEST_XCODE"
+          sed -i '' 's/\.glassProminent/.borderedProminent/g' dm/ios/Sources/Launcher.swift
+          sed -i '' 's/\.glass\b/.bordered/g' dm/ios/Sources/Launcher.swift
+
       - name: Installer les dependances
         run: |
           xcodebuild -downloadComponent MetalToolchain || true
@@ -35,10 +43,20 @@ jobs:
           unzip -j ~/work_dir/pack.zip -d ~/work_dir/game
           ls -la ~/work_dir/game
 
+      - name: Cache des Shaders iOS
+        uses: actions/cache@v4
+        with:
+          path: ~/work_dir/game/0100000011D90000_build/shader
+          key: shaders-bdsp-v1
+
       - name: Generer le fichier IPA
         run: |
           KEYS_FILE=$(find ~/work_dir/game -iname "*prod.keys*" | head -n 1)
-          python3 scripts/build_ipa_from_nsp.py ~/work_dir/game -k "$KEYS_FILE" -o ~/work_dir/Pokemon_BD.ipa --allow-other-metal
+          python3 scripts/build_ipa_from_nsp.py ~/work_dir/game -k "$KEYS_FILE" -o ~/work_dir/Pokemon_BD.ipa --lang fr --allow-other-metal || {
+            echo "=== FIN DU LOG XCODEBUILD ==="
+            tail -n 40 ~/work_dir/game/0100000011D90000_build/ipa/build/ios/pkg/build.log || true
+            exit 1
+          }
 
       - name: Uploader le fichier IPA
         uses: actions/upload-artifact@v4
