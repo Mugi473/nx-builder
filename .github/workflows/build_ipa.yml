@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       gdrive_id:
-        description: 'Colle ici le lien Google Drive complet de ton pack.zip'
+        description: 'Colle ici le lien Google Drive ou l ID de ton pack.zip'
         required: true
         type: string
 
@@ -29,13 +29,16 @@ jobs:
       - name: Telecharger et extraire les fichiers
         run: |
           mkdir -p ~/work_dir/game
-          python3 -m gdown --fuzzy "${{ inputs.gdrive_id }}" -O ~/work_dir/pack.zip
+          FILE_ID=$(echo "${{ inputs.gdrive_id }}" | sed -n 's/.*\/d\/\([a-zA-Z0-9_-]*\).*/\1/p')
+          if [ -z "$FILE_ID" ]; then FILE_ID="${{ inputs.gdrive_id }}"; fi
+          python3 -m gdown "$FILE_ID" -O ~/work_dir/pack.zip
           unzip -j ~/work_dir/pack.zip -d ~/work_dir/game
           ls -la ~/work_dir/game
 
       - name: Generer le fichier IPA
         run: |
-          python3 scripts/build_ipa_from_nsp.py ~/work_dir/game -k ~/work_dir/game/prod.keys -o ~/work_dir/Pokemon_BD.ipa
+          KEYS_FILE=$(find ~/work_dir/game -iname "*prod.keys*" | head -n 1)
+          python3 scripts/build_ipa_from_nsp.py ~/work_dir/game -k "$KEYS_FILE" -o ~/work_dir/Pokemon_BD.ipa
 
       - name: Uploader le fichier IPA
         uses: actions/upload-artifact@v4
