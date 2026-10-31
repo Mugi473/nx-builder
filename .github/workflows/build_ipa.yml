@@ -24,12 +24,12 @@ jobs:
           xcodebuild -downloadComponent MetalToolchain || true
           brew install xcodegen zstd glslang
           brew install --cask dotnet-sdk
-          python3 -m pip install lz4 capstone fonttools nsz gdown "backports.zstd; python_version < '3.14'"
+          python3 -m pip install --break-system-packages lz4 capstone fonttools nsz gdown "backports.zstd; python_version < '3.14'"
 
       - name: Telecharger et extraire les fichiers
         run: |
           mkdir -p ~/work_dir/game
-          gdown --fuzzy "${{ inputs.gdrive_id }}" -O ~/work_dir/pack.zip
+          python3 -m gdown --fuzzy "${{ inputs.gdrive_id }}" -O ~/work_dir/pack.zip
           unzip -j ~/work_dir/pack.zip -d ~/work_dir/game
           ls -la ~/work_dir/game
 
