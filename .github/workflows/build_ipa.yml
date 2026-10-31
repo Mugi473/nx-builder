@@ -4,8 +4,13 @@ on:
   workflow_dispatch:
     inputs:
       gdrive_id:
-        description: "Colle ici le lien Google Drive ou l ID de ton pack TOTK"
+        description: "Lien Google Drive ou ID du pack (.zip avec .nsp et prod.keys)"
         required: true
+        type: string
+      game_name:
+        description: "Nom du jeu (sans espace, ex: Zelda_TOTK, Mario_Wonder)"
+        required: true
+        default: "Zelda_TOTK"
         type: string
 
 jobs:
@@ -48,27 +53,27 @@ jobs:
           ls -la ~/work_dir/game
           df -h
 
-      - name: Restaurer le cache des Shaders TOTK
+      - name: Restaurer le cache des Shaders
         uses: actions/cache/restore@v4
         with:
           path: ~/work_dir/game/*_build/shader
-          key: shaders-totk-v1
+          key: shaders-${{ inputs.game_name }}-v1
 
       - name: Generer le fichier IPA
         run: |
           KEYS_FILE=$(find ~/work_dir/game -iname "*prod.keys*" | head -n 1)
-          python3 scripts/build_ipa_from_nsp.py ~/work_dir/game -k "$KEYS_FILE" -o ~/work_dir/Zelda_TOTK.ipa --lang fr --allow-other-metal
+          python3 scripts/build_ipa_from_nsp.py ~/work_dir/game -k "$KEYS_FILE" -o ~/work_dir/${{ inputs.game_name }}.ipa --lang fr --allow-other-metal
 
-      - name: Sauvegarder le cache des Shaders TOTK
+      - name: Sauvegarder le cache des Shaders
         if: always()
         uses: actions/cache/save@v4
         with:
           path: ~/work_dir/game/*_build/shader
-          key: shaders-totk-v1
+          key: shaders-${{ inputs.game_name }}-v1
 
       - name: Uploader le fichier IPA
         uses: actions/upload-artifact@v4
         with:
-          name: Zelda-TOTK-IPA
-          path: ~/work_dir/Zelda_TOTK.ipa
+          name: ${{ inputs.game_name }}-IPA
+          path: ~/work_dir/${{ inputs.game_name }}.ipa
           retention-days: 1
