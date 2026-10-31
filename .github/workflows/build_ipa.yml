@@ -38,7 +38,7 @@ jobs:
       - name: Generer le fichier IPA
         run: |
           KEYS_FILE=$(find ~/work_dir/game -iname "*prod.keys*" | head -n 1)
-          python3 scripts/build_ipa_from_nsp.py ~/work_dir/game -k "$KEYS_FILE" -o ~/work_dir/Pokemon_BD.ipa
+          python3 scripts/build_ipa_from_nsp.py ~/work_dir/game -k "$KEYS_FILE" -o ~/work_dir/Pokemon_BD.ipa --allow-other-metal
 
       - name: Uploader le fichier IPA
         uses: actions/upload-artifact@v4
