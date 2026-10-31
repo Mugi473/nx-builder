@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       gdrive_id:
-        description: 'Colle ici le lien Google Drive ou l ID de ton pack.zip'
+        description: "Colle ici le lien Google Drive ou l ID de ton pack.zip"
         required: true
         type: string
 
@@ -19,7 +19,7 @@ jobs:
         with:
           repository: seedds/nxnative
 
-      - name:Selectionner Xcode le plus recent et patcher Launcher.swift
+      - name: Selectionner Xcode et patcher Launcher.swift
         run: |
           LATEST_XCODE=$(ls -d /Applications/Xcode*.app | sort -V | tail -n 1)
           echo "Xcode selectionne : $LATEST_XCODE"
