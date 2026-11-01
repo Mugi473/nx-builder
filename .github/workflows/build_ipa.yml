@@ -24,11 +24,19 @@ jobs:
         with:
           repository: seedds/nxnative
 
-      - name: Selectionner Xcode 26.3 et patcher DmGamepad.m
+      - name: Selectionner Xcode 26.3, liberer 40 Go d espace et patcher DmGamepad.m
         run: |
           LATEST_XCODE=$(ls -d /Applications/Xcode*.app | sort -V | tail -n 1)
           echo "Xcode selectionne : $LATEST_XCODE"
           sudo xcode-select -s "$LATEST_XCODE"
+          for app in /Applications/Xcode*.app; do
+            if [ "$app" != "$LATEST_XCODE" ]; then
+              echo "Suppression de l ancien Xcode pour liberer de la place : $app"
+              sudo rm -rf "$app"
+            fi
+          done
+          sudo rm -rf /Library/Developer/CoreSimulator /Users/runner/hostedtoolcache
+          df -h
           sed -i '' 's/.*deviceMotionBody.*/\/\/ patched for iOS 26.2 SDK/g' dm/ios/Sources/DmGamepad.m
           find dm/ios -name "*.swift" -exec sed -i '' 's/if #available(iOS 27/if #available(iOS 99/g' {} +
 
