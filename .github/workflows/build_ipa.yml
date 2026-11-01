@@ -26,14 +26,17 @@ jobs:
 
       - name: Selectionner Xcode 26.3, liberer 50 Go et patcher nxnative
         run: |
-          LATEST_XCODE=$(ls -d /Applications/Xcode*.app | sort -V | tail -n 1)
-          echo "Xcode selectionne : $LATEST_XCODE"
-          sudo xcode-select -s "$LATEST_XCODE"
+          LATEST_XCODE=$(python3 -c 'import os, glob; apps = [os.path.realpath(p) for p in glob.glob("/Applications/Xcode*.app") if os.path.exists(os.path.realpath(p))]; apps.sort(); print(apps[-1])')
+          echo "Vrai dossier Xcode conserve : $LATEST_XCODE"
           for app in /Applications/Xcode*.app; do
-            if [ "$app" != "$LATEST_XCODE" ]; then
+            REAL_APP=$(python3 -c "import os, sys; print(os.path.realpath(sys.argv[1]))" "$app")
+            if [ "$REAL_APP" != "$LATEST_XCODE" ] && [ "$app" != "$LATEST_XCODE" ]; then
+              echo "Suppression de : $app"
               sudo rm -rf "$app"
             fi
           done
+          sudo xcode-select -s "$LATEST_XCODE/Contents/Developer"
+          xcodebuild -version
           sudo rm -rf /Library/Developer/CoreSimulator /Users/runner/hostedtoolcache /opt/homebrew/Cellar/llvm* /Applications/Android*
           df -h
           sed -i '' 's/.*deviceMotionBody.*/\/\/ patched for iOS 26.2 SDK/g' dm/ios/Sources/DmGamepad.m
@@ -43,9 +46,12 @@ jobs:
 
       - name: Installer les dependances
         run: |
+          LATEST_XCODE=$(python3 -c 'import os, glob; apps = [os.path.realpath(p) for p in glob.glob("/Applications/Xcode*.app") if os.path.exists(os.path.realpath(p))]; apps.sort(); print(apps[-1])')
+          sudo xcode-select -s "$LATEST_XCODE/Contents/Developer"
           xcodebuild -downloadComponent MetalToolchain || true
           brew install xcodegen zstd glslang
           brew install --cask dotnet-sdk
+          sudo xcode-select -s "$LATEST_XCODE/Contents/Developer"
           python3 -m pip install --break-system-packages lz4 capstone fonttools nsz gdown "backports.zstd; python_version < '3.14'"
 
       - name: Telecharger et extraire (via API Google Drive)
@@ -78,6 +84,9 @@ jobs:
 
       - name: Generer le fichier IPA (avec suppression auto des NSP apres extraction)
         run: |
+          LATEST_XCODE=$(python3 -c 'import os, glob; apps = [os.path.realpath(p) for p in glob.glob("/Applications/Xcode*.app") if os.path.exists(os.path.realpath(p))]; apps.sort(); print(apps[-1])')
+          sudo xcode-select -s "$LATEST_XCODE/Contents/Developer"
+          export DEVELOPER_DIR="$LATEST_XCODE/Contents/Developer"
           (
             while [ ! -d ~/work_dir/game/*_build/shader ]; do sleep 5; done
             echo "Extraction terminee : suppression des fichiers .nsp pour liberer 16 Go..."
