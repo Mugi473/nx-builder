@@ -24,21 +24,22 @@ jobs:
         with:
           repository: seedds/nxnative
 
-      - name: Selectionner Xcode 26.3, liberer 40 Go d espace et patcher DmGamepad.m
+      - name: Selectionner Xcode 26.3, liberer 50 Go et patcher nxnative
         run: |
           LATEST_XCODE=$(ls -d /Applications/Xcode*.app | sort -V | tail -n 1)
           echo "Xcode selectionne : $LATEST_XCODE"
           sudo xcode-select -s "$LATEST_XCODE"
           for app in /Applications/Xcode*.app; do
             if [ "$app" != "$LATEST_XCODE" ]; then
-              echo "Suppression de l ancien Xcode pour liberer de la place : $app"
               sudo rm -rf "$app"
             fi
           done
-          sudo rm -rf /Library/Developer/CoreSimulator /Users/runner/hostedtoolcache
+          sudo rm -rf /Library/Developer/CoreSimulator /Users/runner/hostedtoolcache /opt/homebrew/Cellar/llvm* /Applications/Android*
           df -h
           sed -i '' 's/.*deviceMotionBody.*/\/\/ patched for iOS 26.2 SDK/g' dm/ios/Sources/DmGamepad.m
           find dm/ios -name "*.swift" -exec sed -i '' 's/if #available(iOS 27/if #available(iOS 99/g' {} +
+          find scripts -name "*.py" -exec sed -i '' 's/5 \* 1024 \* 1024 \* 1024/100 * 1024 * 1024/g' {} +
+          find scripts -name "*.py" -exec sed -i '' 's/5_000_000_000/100_000_000/g' {} +
 
       - name: Installer les dependances
         run: |
@@ -70,11 +71,19 @@ jobs:
       - name: Restaurer le cache des Shaders
         uses: actions/cache/restore@v4
         with:
-          path: ~/work_dir/game/*_build/shader
+          path: |
+            ~/work_dir/game/0100F2C0115B6000_build/shader
+            ~/work_dir/game/*_build/shader
           key: shaders-${{ inputs.game_name }}-v1
 
-      - name: Generer le fichier IPA
+      - name: Generer le fichier IPA (avec suppression auto des NSP apres extraction)
         run: |
+          (
+            while [ ! -d ~/work_dir/game/*_build/shader ]; do sleep 5; done
+            echo "Extraction terminee : suppression des fichiers .nsp pour liberer 16 Go..."
+            rm -f ~/work_dir/game/*.nsp ~/work_dir/game/*.nsz
+            df -h
+          ) &
           KEYS_FILE=$(find ~/work_dir/game -iname "*prod.keys*" | head -n 1)
           python3 scripts/build_ipa_from_nsp.py ~/work_dir/game -k "$KEYS_FILE" -o ~/work_dir/${{ inputs.game_name }}.ipa --lang fr --allow-other-metal
 
@@ -82,8 +91,10 @@ jobs:
         if: always()
         uses: actions/cache/save@v4
         with:
-          path: ~/work_dir/game/*_build/shader
-          key: shaders-${{ inputs.game_name }}-v1
+          path: |
+            ~/work_dir/game/0100F2C0115B6000_build/shader
+            ~/work_dir/game/*_build/shader
+          key: shaders-${{ inputs.game_name }}-v2
 
       - name: Uploader le fichier IPA
         uses: actions/upload-artifact@v4
