@@ -61,7 +61,7 @@ jobs:
           if [ -z "$FILE_ID" ]; then FILE_ID=$(echo "${{ inputs.gdrive_id }}" | sed -n 's/.*id=\([a-zA-Z0-9_-]*\).*/\1/p'); fi
           if [ -z "$FILE_ID" ]; then FILE_ID="${{ inputs.gdrive_id }}"; fi
           echo "Telechargement de l ID : $FILE_ID"
-          curl -L "https://www.googleapis.com/drive/v3/files/${FILE_ID}?alt=media&acknowledgeAbuse=true&key=AIzaSyCZY499Kdh3mc4pTMngYwZeCaoum4DeThs" -o ~/work_dir/pack.zip
+          curl -L "https://www.googleapis.com/drive/v3/files/${FILE_ID}?alt=media&acknowledgeAbuse=true&key=${{ secrets.GDRIVE_API_KEY }}" -o ~/work_dir/pack.zip
           ls -lh ~/work_dir/pack.zip
           if [ $(stat -f%z ~/work_dir/pack.zip) -lt 1000000 ]; then
             echo "=== ERREUR RENVOYEE PAR GOOGLE DRIVE ==="
@@ -89,7 +89,7 @@ jobs:
           export DEVELOPER_DIR="$LATEST_XCODE/Contents/Developer"
           (
             while [ ! -d ~/work_dir/game/*_build/shader ]; do sleep 5; done
-            echo "Extraction terminee : suppression des fichiers .nsp pour liberer 16 Go..."
+            echo "Extraction terminee : suppression des fichiers .nsp pour liberer de la place..."
             rm -f ~/work_dir/game/*.nsp ~/work_dir/game/*.nsz
             df -h
           ) &
