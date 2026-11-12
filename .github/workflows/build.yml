@@ -18,7 +18,7 @@ on:
 
 jobs:
   build:
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 60
 
     steps:
@@ -30,10 +30,10 @@ jobs:
         with:
           dotnet-version: '8.0.x'
 
-      - name: Libérer de l'espace disque sur le runner macOS
+      - name: Libérer de l'espace disque sur le runner macOS 15
         run: |
           df -h
-          sudo rm -rf /Applications/Xcode_15.0.app /Applications/Xcode_15.1.app /Applications/Xcode_15.2.app || true
+          sudo rm -rf /Applications/Xcode_16.0.app /Applications/Xcode_16.1.app || true
           sudo rm -rf /Library/Developer/CoreSimulator /usr/local/share/boost /opt/homebrew/Cellar/llvm || true
           df -h
 
@@ -66,7 +66,7 @@ jobs:
           echo "Extraction du jeu de base, de la MAJ et des keys..."
           unzip -q game_bundle.zip -d pack/
           
-          # Supprime immédiatement le gros ZIP pour économiser ~6-12 Go sur le runner
+          # Supprime immédiatement le gros ZIP pour économiser de l'espace sur le runner
           rm -f game_bundle.zip
           ls -laR pack/
 
@@ -83,7 +83,6 @@ jobs:
           fi
           
           # 2. Séparer le jeu de base (le plus gros NSP/XCI) et la MAJ (le plus petit NSP)
-          # Trie les fichiers .nsp/.xci du plus lourd au plus léger
           IFS=$'\n' sorted_roms=($(find . -type f \( -iname "*.nsp" -o -iname "*.xci" \) -exec ls -S {} +))
           unset IFS
           
@@ -99,43 +98,4 @@ jobs:
           fi
           
           echo "Clés détectées : $KEYS_FILE"
-          echo "Jeu de base (plus gros fichier) : $BASE_GAME"
-          echo "Mise à jour détectée : $UPDATE_GAME"
-          
-          echo "keys=$(realpath "$KEYS_FILE")" >> $GITHUB_OUTPUT
-          echo "base=$(realpath "$BASE_GAME")" >> $GITHUB_OUTPUT
-          if [ -n "$UPDATE_GAME" ]; then
-            echo "update=$(realpath "$UPDATE_GAME")" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Compiler avec NXNative
-        run: |
-          mkdir -p output
-          
-          # Construction des arguments selon la présence d'une MAJ dans le ZIP
-          UPDATE_ARG=""
-          if [ -n "${{ steps.detect.outputs.update }}" ]; then
-            UPDATE_ARG="--update \"${{ steps.detect.outputs.update }}\""
-          fi
-          
-          # Si nxnative est à la racine de ton dépôt ou téléchargé en release :
-          chmod +x ./nxnative || true
-          
-          eval ./nxnative build \
-            --base "${{ steps.detect.outputs.base }}" \
-            $UPDATE_ARG \
-            --keys "${{ steps.detect.outputs.keys }}" \
-            --romfs ${{ inputs.romfs_mode }} \
-            --output ./output
-            
-          # Nettoyage des NSP extraits avant l'upload de l'Artifact
-          rm -rf workspace/pack
-
-      - name: Uploader l'IPA (et le RomFS si séparé)
-        uses: actions/upload-artifact@v4
-        with:
-          name: NXNative-Build-${{ inputs.romfs_mode }}
-          path: |
-            output/*.ipa
-            output/romfs/**
-          retention-days: 5
+          echo "Jeu de base (plus gros fichier) : $BASE_GAME
