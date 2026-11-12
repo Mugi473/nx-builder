@@ -1,0 +1,141 @@
+name: Build NXNative IPA (Standard)
+
+on:
+  workflow_dispatch:
+    inputs:
+      gdrive_zip_id:
+        description: 'ID Google Drive (ou URL) de ton ZIP (Jeu + MAJ + prod.keys)'
+        required: true
+        type: string
+      romfs_mode:
+        description: 'Mode RomFS (embedded = IPA complet, separate = IPA léger + dossier romfs)'
+        required: true
+        default: 'embedded'
+        type: choice
+        options:
+          - embedded
+          - separate
+
+jobs:
+  build:
+    runs-on: macos-14
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 8 SDK
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Libérer de l'espace disque sur le runner macOS
+        run: |
+          df -h
+          sudo rm -rf /Applications/Xcode_15.0.app /Applications/Xcode_15.1.app /Applications/Xcode_15.2.app || true
+          sudo rm -rf /Library/Developer/CoreSimulator /usr/local/share/boost /opt/homebrew/Cellar/llvm || true
+          df -h
+
+      - name: Télécharger et extraire le pack ZIP (Jeu + MAJ + Keys) depuis Google Drive
+        env:
+          GDRIVE_API_KEY: ${{ secrets.GDRIVE_API_KEY }}
+          RAW_INPUT: ${{ inputs.gdrive_zip_id }}
+        run: |
+          mkdir -p workspace/pack
+          cd workspace
+          
+          # Extrait l'ID automatiquement même si une URL Google Drive complète est collée
+          if [[ "$RAW_INPUT" == *"drive.google.com"* ]]; then
+            FILE_ID=$(echo "$RAW_INPUT" | sed -n 's/.*\/d\/\([a-zA-Z0-9_-]*\).*/\1/p')
+            if [ -z "$FILE_ID" ]; then
+              FILE_ID=$(echo "$RAW_INPUT" | sed -n 's/.*id=\([a-zA-Z0-9_-]*\).*/\1/p')
+            fi
+          else
+            FILE_ID="$RAW_INPUT"
+          fi
+          
+          echo "Téléchargement de l'archive Google Drive ID: $FILE_ID..."
+          curl -L -sS --fail \
+            "https://www.googleapis.com/drive/v3/files/${FILE_ID}?alt=media&acknowledgeAbuse=true&key=${GDRIVE_API_KEY}" \
+            -o game_bundle.zip
+            
+          echo "Vérification de l'archive téléchargée..."
+          ls -lh game_bundle.zip
+          
+          echo "Extraction du jeu de base, de la MAJ et des keys..."
+          unzip -q game_bundle.zip -d pack/
+          
+          # Supprime immédiatement le gros ZIP pour économiser ~6-12 Go sur le runner
+          rm -f game_bundle.zip
+          ls -laR pack/
+
+      - name: Détecter automatiquement Base, Update et prod.keys
+        id: detect
+        run: |
+          cd workspace/pack
+          
+          # 1. Trouver prod.keys (ou *.keys)
+          KEYS_FILE=$(find . -type f \( -iname "prod.keys" -o -iname "*.keys" \) | head -n 1)
+          if [ -z "$KEYS_FILE" ]; then
+            echo "Erreur : Aucun fichier prod.keys trouvé dans le ZIP !"
+            exit 1
+          fi
+          
+          # 2. Séparer le jeu de base (le plus gros NSP/XCI) et la MAJ (le plus petit NSP)
+          # Trie les fichiers .nsp/.xci du plus lourd au plus léger
+          IFS=$'\n' sorted_roms=($(find . -type f \( -iname "*.nsp" -o -iname "*.xci" \) -exec ls -S {} +))
+          unset IFS
+          
+          if [ ${#sorted_roms[@]} -eq 0 ]; then
+            echo "Erreur : Aucun fichier .nsp ou .xci trouvé dans le ZIP !"
+            exit 1
+          fi
+          
+          BASE_GAME="${sorted_roms[0]}"
+          UPDATE_GAME=""
+          if [ ${#sorted_roms[@]} -ge 2 ]; then
+            UPDATE_GAME="${sorted_roms[1]}"
+          fi
+          
+          echo "Clés détectées : $KEYS_FILE"
+          echo "Jeu de base (plus gros fichier) : $BASE_GAME"
+          echo "Mise à jour détectée : $UPDATE_GAME"
+          
+          echo "keys=$(realpath "$KEYS_FILE")" >> $GITHUB_OUTPUT
+          echo "base=$(realpath "$BASE_GAME")" >> $GITHUB_OUTPUT
+          if [ -n "$UPDATE_GAME" ]; then
+            echo "update=$(realpath "$UPDATE_GAME")" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Compiler avec NXNative
+        run: |
+          mkdir -p output
+          
+          # Construction des arguments selon la présence d'une MAJ dans le ZIP
+          UPDATE_ARG=""
+          if [ -n "${{ steps.detect.outputs.update }}" ]; then
+            UPDATE_ARG="--update \"${{ steps.detect.outputs.update }}\""
+          fi
+          
+          # Si nxnative est à la racine de ton dépôt ou téléchargé en release :
+          chmod +x ./nxnative || true
+          
+          eval ./nxnative build \
+            --base "${{ steps.detect.outputs.base }}" \
+            $UPDATE_ARG \
+            --keys "${{ steps.detect.outputs.keys }}" \
+            --romfs ${{ inputs.romfs_mode }} \
+            --output ./output
+            
+          # Nettoyage des NSP extraits avant l'upload de l'Artifact
+          rm -rf workspace/pack
+
+      - name: Uploader l'IPA (et le RomFS si séparé)
+        uses: actions/upload-artifact@v4
+        with:
+          name: NXNative-Build-${{ inputs.romfs_mode }}
+          path: |
+            output/*.ipa
+            output/romfs/**
+          retention-days: 5
