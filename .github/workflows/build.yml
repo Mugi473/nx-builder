@@ -15,6 +15,11 @@ on:
         options:
           - embedded
           - separate
+      nxnative_repo:
+        description: 'URL GitHub du dépôt nxnative à cloner'
+        required: true
+        default: 'https://github.com/seedds/nxnative.git'
+        type: string
 
 jobs:
   build:
@@ -36,6 +41,38 @@ jobs:
           sudo rm -rf /Applications/Xcode_16.0.app /Applications/Xcode_16.1.app || true
           sudo rm -rf /Library/Developer/CoreSimulator /usr/local/share/boost /opt/homebrew/Cellar/llvm || true
           df -h
+
+      - name: Cloner et compiler seedds/nxnative
+        env:
+          REPO_URL: ${{ inputs.nxnative_repo }}
+        run: |
+          echo "Clonage de $REPO_URL..."
+          git clone --recursive "$REPO_URL" nxnative_src
+          
+          cd nxnative_src
+          ls -la
+          
+          if [ -f "./nxnative" ]; then
+            chmod +x ./nxnative
+            cp ./nxnative ../nxnative
+          else
+            CSPROJ=$(find . -name "*.csproj" | grep -iE "cli|nxnative" | head -n 1)
+            if [ -z "$CSPROJ" ]; then
+              CSPROJ=$(find . -name "*.csproj" | head -n 1)
+            fi
+            
+            if [ -n "$CSPROJ" ]; then
+              echo "Compilation du projet .NET : $CSPROJ"
+              dotnet publish "$CSPROJ" -c Release -r osx-arm64 --self-contained -o ../nxnative_bin
+            elif [ -f "Cargo.toml" ]; then
+              cargo build --release
+              find target/release -maxdepth 1 -type f -perm +111 -exec cp {} ../nxnative_bin/ \;
+            elif [ -f "CMakeLists.txt" ] || [ -f "Makefile" ]; then
+              mkdir -p build && cd build
+              cmake .. -DCMAKE_BUILD_TYPE=Release || true
+              make -j$(sysctl -n hw.ncpu)
+            fi
+          fi
 
       - name: Télécharger et extraire le pack ZIP (Jeu + MAJ + Keys) depuis Google Drive
         env:
@@ -69,7 +106,6 @@ jobs:
         run: |
           cd workspace/pack
           
-          # 1. Trouver prod.keys et le copier sous un nom simple sans espaces ni guillemets
           KEYS_FILE=$(find . -type f \( -iname "prod.keys" -o -iname "*.keys" \) | head -n 1)
           if [ -z "$KEYS_FILE" ]; then
             echo "Erreur : Aucun fichier prod.keys trouvé dans le ZIP !"
@@ -78,9 +114,8 @@ jobs:
           cp "$KEYS_FILE" ../prod.keys
           echo "Clés préparées : $(realpath ../prod.keys)"
           
-          # 2. Trouver le plus gros NSP/XCI (Jeu de base) et le second (MAJ) via Python (insensible aux apostrophes/espaces)
           python3 - << 'EOF'
-          import os, glob, shutil
+          import os, shutil
 
           exts = ('.nsp', '.xci')
           files = []
@@ -110,32 +145,46 @@ jobs:
                   out.write(f"update={upd_dest}\n")
           EOF
 
-      - name: Compiler avec NXNative
+      - name: Compiler le jeu avec NXNative
         run: |
           mkdir -p output
           
-          if [ ! -f "./nxnative" ]; then
-            echo "Récupération du binaire nxnative..."
-            curl -L -sS --fail "https://github.com/nxnative/nxnative/releases/latest/download/nxnative-macos-arm64" -o ./nxnative || true
+          NX_BIN=""
+          if [ -f "./nxnative" ]; then
+            NX_BIN="./nxnative"
+          elif [ -d "./nxnative_bin" ]; then
+            NX_BIN=$(find ./nxnative_bin -maxdepth 1 -type f -perm +111 | grep -v "\.dylib" | head -n 1)
           fi
-          chmod +x ./nxnative || true
+          
+          if [ -n "$NX_BIN" ]; then
+            chmod +x "$NX_BIN"
+            CMD="$NX_BIN"
+          else
+            CSPROJ=$(find ./nxnative_src -name "*.csproj" | grep -iE "cli|nxnative" | head -n 1)
+            if [ -z "$CSPROJ" ]; then
+              CSPROJ=$(find ./nxnative_src -name "*.csproj" | head -n 1)
+            fi
+            CMD="dotnet run --project $CSPROJ -c Release --"
+          fi
+          
+          echo "Exécution via : $CMD"
           
           if [ -n "${{ steps.detect.outputs.update }}" ]; then
-            ./nxnative build \
+            $CMD build \
               --base "${{ steps.detect.outputs.base }}" \
               --update "${{ steps.detect.outputs.update }}" \
               --keys "${{ steps.detect.outputs.keys }}" \
               --romfs ${{ inputs.romfs_mode }} \
               --output ./output
           else
-            ./nxnative build \
+            $CMD build \
               --base "${{ steps.detect.outputs.base }}" \
               --keys "${{ steps.detect.outputs.keys }}" \
               --romfs ${{ inputs.romfs_mode }} \
               --output ./output
           fi
           
-          rm -rf workspace
+          rm -rf workspace nxnative_src nxnative_bin
 
       - name: Uploader l'IPA (et le RomFS si séparé)
         uses: actions/upload-artifact@v4
