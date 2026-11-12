@@ -1,196 +1,124 @@
-name: Build NXNative IPA (Standard)
+name: Build NXNative IPA
 
 on:
   workflow_dispatch:
     inputs:
-      gdrive_zip_id:
-        description: 'ID Google Drive (ou URL) de ton ZIP (Jeu + MAJ + prod.keys)'
+      gdrive_id:
+        description: "Lien Google Drive ou ID du pack (.zip avec .nsp et prod.keys)"
         required: true
         type: string
       romfs_mode:
-        description: 'Mode RomFS (embedded = IPA complet, separate = IPA léger + dossier romfs)'
+        description: "Mode RomFS (embedded = IPA standard complet, separate = IPA léger + romfs)"
         required: true
-        default: 'embedded'
+        default: "embedded"
         type: choice
         options:
           - embedded
           - separate
-      nxnative_repo:
-        description: 'URL GitHub du dépôt nxnative à cloner'
-        required: true
-        default: 'https://github.com/seedds/nxnative.git'
-        type: string
 
 jobs:
   build:
     runs-on: macos-15
-    timeout-minutes: 60
+    timeout-minutes: 240
 
     steps:
-      - name: Checkout repository
+      - name: Cloner nxnative
         uses: actions/checkout@v4
-
-      - name: Setup .NET 8 SDK
-        uses: actions/setup-dotnet@v4
         with:
-          dotnet-version: '8.0.x'
+          repository: seedds/nxnative
 
-      - name: Libérer de l'espace disque sur le runner macOS 15
+      - name: Sélectionner Xcode, libérer 50 Go et patcher nxnative
         run: |
+          LATEST_XCODE=$(python3 -c 'import os, glob; apps = [os.path.realpath(p) for p in glob.glob("/Applications/Xcode*.app") if os.path.exists(os.path.realpath(p))]; apps.sort(); print(apps[-1])')
+          echo "Vrai dossier Xcode conservé : $LATEST_XCODE"
+          for app in /Applications/Xcode*.app; do
+            REAL_APP=$(python3 -c "import os, sys; print(os.path.realpath(sys.argv[1]))" "$app")
+            if [ "$REAL_APP" != "$LATEST_XCODE" ] && [ "$app" != "$LATEST_XCODE" ]; then
+              echo "Suppression de : $app"
+              sudo rm -rf "$app"
+            fi
+          done
+          sudo xcode-select -s "$LATEST_XCODE/Contents/Developer"
+          xcodebuild -version
+          sudo rm -rf /Library/Developer/CoreSimulator /Users/runner/hostedtoolcache /opt/homebrew/Cellar/llvm* /Applications/Android*
           df -h
-          sudo rm -rf /Applications/Xcode_16.0.app /Applications/Xcode_16.1.app || true
-          sudo rm -rf /Library/Developer/CoreSimulator /usr/local/share/boost /opt/homebrew/Cellar/llvm || true
-          df -h
+          sed -i '' 's/.*deviceMotionBody.*/\/\/ patched for iOS 26.2 SDK/g' dm/ios/Sources/DmGamepad.m
+          find dm/ios -name "*.swift" -exec sed -i '' 's/if #available(iOS 27/if #available(iOS 99/g' {} +
+          find scripts -name "*.py" -exec sed -i '' 's/5 \* 1024 \* 1024 \* 1024/100 * 1024 * 1024/g' {} +
+          find scripts -name "*.py" -exec sed -i '' 's/5_000_000_000/100_000_000/g' {} +
 
-      - name: Cloner et compiler seedds/nxnative
-        env:
-          REPO_URL: ${{ inputs.nxnative_repo }}
+      - name: Installer les dépendances
         run: |
-          echo "Clonage de $REPO_URL..."
-          git clone --recursive "$REPO_URL" nxnative_src
-          
-          cd nxnative_src
-          ls -la
-          
-          if [ -f "./nxnative" ]; then
-            chmod +x ./nxnative
-            cp ./nxnative ../nxnative
-          else
-            CSPROJ=$(find . -name "*.csproj" | grep -iE "cli|nxnative" | head -n 1)
-            if [ -z "$CSPROJ" ]; then
-              CSPROJ=$(find . -name "*.csproj" | head -n 1)
-            fi
-            
-            if [ -n "$CSPROJ" ]; then
-              echo "Compilation du projet .NET : $CSPROJ"
-              dotnet publish "$CSPROJ" -c Release -r osx-arm64 --self-contained -o ../nxnative_bin
-            elif [ -f "Cargo.toml" ]; then
-              cargo build --release
-              find target/release -maxdepth 1 -type f -perm +111 -exec cp {} ../nxnative_bin/ \;
-            elif [ -f "CMakeLists.txt" ] || [ -f "Makefile" ]; then
-              mkdir -p build && cd build
-              cmake .. -DCMAKE_BUILD_TYPE=Release || true
-              make -j$(sysctl -n hw.ncpu)
-            fi
-          fi
+          LATEST_XCODE=$(python3 -c 'import os, glob; apps = [os.path.realpath(p) for p in glob.glob("/Applications/Xcode*.app") if os.path.exists(os.path.realpath(p))]; apps.sort(); print(apps[-1])')
+          sudo xcode-select -s "$LATEST_XCODE/Contents/Developer"
+          xcodebuild -downloadComponent MetalToolchain || true
+          brew install xcodegen zstd glslang p7zip
+          brew install --cask dotnet-sdk
+          sudo xcode-select -s "$LATEST_XCODE/Contents/Developer"
+          python3 -m pip install --break-system-packages lz4 capstone fonttools nsz gdown "backports.zstd; python_version < '3.14'"
 
-      - name: Télécharger et extraire le pack ZIP (Jeu + MAJ + Keys) depuis Google Drive
+      - name: Télécharger et extraire (via API Google Drive)
+        id: gdrive
         env:
           GDRIVE_API_KEY: ${{ secrets.GDRIVE_API_KEY }}
-          RAW_INPUT: ${{ inputs.gdrive_zip_id }}
         run: |
-          mkdir -p workspace/pack
-          cd workspace
-          
-          if [[ "$RAW_INPUT" == *"drive.google.com"* ]]; then
-            FILE_ID=$(echo "$RAW_INPUT" | sed -n 's/.*\/d\/\([a-zA-Z0-9_-]*\).*/\1/p')
-            if [ -z "$FILE_ID" ]; then
-              FILE_ID=$(echo "$RAW_INPUT" | sed -n 's/.*id=\([a-zA-Z0-9_-]*\).*/\1/p')
-            fi
-          else
-            FILE_ID="$RAW_INPUT"
-          fi
-          
-          echo "Téléchargement de l'archive Google Drive ID: $FILE_ID..."
-          curl -L -sS --fail \
-            "https://www.googleapis.com/drive/v3/files/${FILE_ID}?alt=media&acknowledgeAbuse=true&key=${GDRIVE_API_KEY}" \
-            -o game_bundle.zip
-            
-          ls -lh game_bundle.zip
-          unzip -q game_bundle.zip -d pack/
-          rm -f game_bundle.zip
-          ls -laR pack/
-
-      - name: Détecter et renommer proprement Base, Update et prod.keys
-        id: detect
-        run: |
-          cd workspace/pack
-          
-          KEYS_FILE=$(find . -type f \( -iname "prod.keys" -o -iname "*.keys" \) | head -n 1)
-          if [ -z "$KEYS_FILE" ]; then
-            echo "Erreur : Aucun fichier prod.keys trouvé dans le ZIP !"
+          mkdir -p ~/work_dir/game
+          FILE_ID=$(echo "${{ inputs.gdrive_id }}" | sed -n 's/.*\/d\/\([a-zA-Z0-9_-]*\).*/\1/p')
+          if [ -z "$FILE_ID" ]; then FILE_ID=$(echo "${{ inputs.gdrive_id }}" | sed -n 's/.*id=\([a-zA-Z0-9_-]*\).*/\1/p'); fi
+          if [ -z "$FILE_ID" ]; then FILE_ID="${{ inputs.gdrive_id }}"; fi
+          echo "file_id=$FILE_ID" >> $GITHUB_OUTPUT
+          echo "Téléchargement de l'ID : $FILE_ID"
+          curl -L "https://www.googleapis.com/drive/v3/files/${FILE_ID}?alt=media&acknowledgeAbuse=true&key=${GDRIVE_API_KEY}" -o ~/work_dir/pack.zip
+          ls -lh ~/work_dir/pack.zip
+          if [ $(stat -f%z ~/work_dir/pack.zip) -lt 1000000 ]; then
+            echo "=== ERREUR RENVOYÉE PAR GOOGLE DRIVE ==="
+            cat ~/work_dir/pack.zip
             exit 1
           fi
-          cp "$KEYS_FILE" ../prod.keys
-          echo "Clés préparées : $(realpath ../prod.keys)"
-          
-          python3 - << 'EOF'
-          import os, shutil
+          7z x ~/work_dir/pack.zip -o$HOME/work_dir/game -y
+          rm -f ~/work_dir/pack.zip
+          find ~/work_dir/game -type f -exec mv -i {} ~/work_dir/game/ \; 2>/dev/null || true
+          ls -lh ~/work_dir/game
+          df -h
 
-          exts = ('.nsp', '.xci')
-          files = []
-          for root, _, filenames in os.walk('.'):
-              for f in filenames:
-                  if f.lower().endswith(exts) and not f.startswith('._'):
-                      p = os.path.join(root, f)
-                      files.append((os.path.getsize(p), p))
+      - name: Restaurer le cache des Shaders
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/work_dir/game/*_build/shader
+          key: shaders-${{ steps.gdrive.outputs.file_id }}-v1
 
-          files.sort(reverse=True)
-          if not files:
-              raise SystemExit("Erreur : Aucun fichier .nsp ou .xci trouvé !")
-
-          base_ext = os.path.splitext(files[0][1])[1].lower()
-          base_dest = os.path.abspath(f"../base{base_ext}")
-          print(f"Jeu de base détecté ({files[0][0] // (1024*1024)} MB) : {files[0][1]} -> {base_dest}")
-          shutil.move(files[0][1], base_dest)
-
-          with open(os.environ['GITHUB_OUTPUT'], 'a') as out:
-              out.write(f"keys={os.path.abspath('../prod.keys')}\n")
-              out.write(f"base={base_dest}\n")
-              if len(files) >= 2:
-                  upd_ext = os.path.splitext(files[1][1])[1].lower()
-                  upd_dest = os.path.abspath(f"../update{upd_ext}")
-                  print(f"Mise à jour détectée ({files[1][0] // (1024*1024)} MB) : {files[1][1]} -> {upd_dest}")
-                  shutil.move(files[1][1], upd_dest)
-                  out.write(f"update={upd_dest}\n")
-          EOF
-
-      - name: Compiler le jeu avec NXNative
+      - name: Générer le fichier IPA (avec suppression auto des NSP après extraction)
         run: |
-          mkdir -p output
-          
-          NX_BIN=""
-          if [ -f "./nxnative" ]; then
-            NX_BIN="./nxnative"
-          elif [ -d "./nxnative_bin" ]; then
-            NX_BIN=$(find ./nxnative_bin -maxdepth 1 -type f -perm +111 | grep -v "\.dylib" | head -n 1)
+          LATEST_XCODE=$(python3 -c 'import os, glob; apps = [os.path.realpath(p) for p in glob.glob("/Applications/Xcode*.app") if os.path.exists(os.path.realpath(p))]; apps.sort(); print(apps[-1])')
+          sudo xcode-select -s "$LATEST_XCODE/Contents/Developer"
+          export DEVELOPER_DIR="$LATEST_XCODE/Contents/Developer"
+          (
+            while [ ! -d ~/work_dir/game/*_build/shader ]; do sleep 5; done
+            echo "Extraction terminée : suppression des fichiers .nsp pour libérer l'espace..."
+            rm -f ~/work_dir/game/*.nsp ~/work_dir/game/*.nsz
+            df -h
+          ) &
+          KEYS_FILE=$(find ~/work_dir/game -iname "*prod.keys*" | head -n 1)
+          EXTRA_ARGS=""
+          if [ "${{ inputs.romfs_mode }}" = "separate" ]; then
+            EXTRA_ARGS="--romfs separate"
           fi
-          
-          if [ -n "$NX_BIN" ]; then
-            chmod +x "$NX_BIN"
-            CMD="$NX_BIN"
-          else
-            CSPROJ=$(find ./nxnative_src -name "*.csproj" | grep -iE "cli|nxnative" | head -n 1)
-            if [ -z "$CSPROJ" ]; then
-              CSPROJ=$(find ./nxnative_src -name "*.csproj" | head -n 1)
-            fi
-            CMD="dotnet run --project $CSPROJ -c Release --"
-          fi
-          
-          echo "Exécution via : $CMD"
-          
-          if [ -n "${{ steps.detect.outputs.update }}" ]; then
-            $CMD build \
-              --base "${{ steps.detect.outputs.base }}" \
-              --update "${{ steps.detect.outputs.update }}" \
-              --keys "${{ steps.detect.outputs.keys }}" \
-              --romfs ${{ inputs.romfs_mode }} \
-              --output ./output
-          else
-            $CMD build \
-              --base "${{ steps.detect.outputs.base }}" \
-              --keys "${{ steps.detect.outputs.keys }}" \
-              --romfs ${{ inputs.romfs_mode }} \
-              --output ./output
-          fi
-          
-          rm -rf workspace nxnative_src nxnative_bin
+          python3 scripts/build_ipa_from_nsp.py ~/work_dir/game -k "$KEYS_FILE" -o ~/work_dir/NXNative_Game.ipa --lang fr --allow-other-metal $EXTRA_ARGS
 
-      - name: Uploader l'IPA (et le RomFS si séparé)
+      - name: Sauvegarder le cache des Shaders
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/work_dir/game/*_build/shader
+          key: shaders-${{ steps.gdrive.outputs.file_id }}-v2
+
+      - name: Uploader le fichier IPA
         uses: actions/upload-artifact@v4
         with:
-          name: NXNative-Build-${{ inputs.romfs_mode }}
+          name: NXNative-IPA-${{ inputs.romfs_mode }}
           path: |
-            output/*.ipa
-            output/romfs/**
-          retention-days: 5
+            ~/work_dir/NXNative_Game.ipa
+            ~/work_dir/game/*_build/romfs/**
+          retention-days: 1
