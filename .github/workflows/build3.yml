@@ -64,8 +64,7 @@ jobs:
                       tree = ast.parse(txt)
                       lines = txt.splitlines()
 
-                      # Trouve tous les blocs 'if' qui contiennent une des phrases cibles et remplace leur condition par False
-                       parents = {}
+                      parents = {}
                       for node in ast.walk(tree):
                           for child in ast.iter_child_nodes(node):
                               parents[child] = node
@@ -81,15 +80,11 @@ jobs:
                                           if_nodes_to_disable.add(curr)
                                           break
 
-                      # Trie de bas en haut pour ne pas décaler les numéros de lignes
                       for if_node in sorted(if_nodes_to_disable, key=lambda n: n.lineno, reverse=True):
                           start_line = if_node.lineno - 1
                           body_start_line = if_node.body[0].lineno - 1
                           indent = lines[start_line][:if_node.col_offset]
-                          print(f"  -> Disabling If block at lines {start_line+1}..{body_start_line} in {p}:")
-                          for dbg in range(start_line, min(len(lines), body_start_line + 6)):
-                              print(f"     {dbg+1}: {lines[dbg]}")
-                          # Remplace toute la condition (même multi-lignes) par 'if False:'
+                          print(f"  -> Disabling If block at lines {start_line+1}..{body_start_line} in {p}")
                           lines[start_line:body_start_line] = [f"{indent}if False:"]
 
                       txt = "\n".join(lines) + "\n"
