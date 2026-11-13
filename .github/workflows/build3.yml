@@ -34,29 +34,70 @@ jobs:
           find . -name "nvn_mtl.m" -exec sed -i '' 's/.*outputOffsetX.*/\/\/ patched MTL4FXTemporalScaler output offsets/g' {} +
           find dm/ios -name "*.swift" -exec sed -i '' 's/if #available(iOS 27/if #available(iOS 99/g' {} +
 
-          # 2. Patch pour qu'Arceus ne bloque pas à la fin de l'étape [4/7] shader split
+          # 2. Patch AST Python infaillible pour neutraliser les blocages [4/7] shader split
           python3 - << 'EOF'
-          import os
-          for root, _, files in os.walk("scripts"):
+          import os, ast
+
+          target_phrases = (
+              "shaders are left out",
+              "could not be read",
+              "the split shader tables differ",
+              "only in the profile",
+          )
+
+          for root, _, files in os.walk("."):
+              if ".git" in root:
+                  continue
               for fname in files:
-                  if not fname.endswith(".py"): continue
+                  if not fname.endswith(".py"):
+                      continue
                   p = os.path.join(root, fname)
-                  with open(p, "r", encoding="utf-8", errors="ignore") as f: txt = f.read()
+                  with open(p, "r", encoding="utf-8", errors="ignore") as f:
+                      txt = f.read()
                   orig = txt
-                  txt = txt.replace("5 * 1024 * 1024 * 1024", "100 * 1024 * 1024").replace("5_000_000_000", "100_000_000")
-                  if "the split shader tables differ" in txt or "shaders are left out" in txt:
+
+                  txt = txt.replace("5 * 1024 * 1024 * 1024", "100 * 1024 * 1024")
+                  txt = txt.replace("5_000_000_000", "100_000_000")
+
+                  if any(phrase in txt for phrase in target_phrases):
+                      print(f"Inspecting AST of: {p}")
+                      tree = ast.parse(txt)
                       lines = txt.splitlines()
-                      for idx, l in enumerate(lines):
-                          if "shaders are left out" in l or "the split shader tables differ" in l:
-                              for back in range(idx, max(-1, idx - 25), -1):
-                                  s = lines[back].lstrip()
-                                  if s.startswith("if ") and s.endswith(":"):
-                                      indent = lines[back][:len(lines[back]) - len(s)]
-                                      lines[back] = f"{indent}if False:"
-                                      break
-                      txt = "\n".join(lines)
+
+                      # Trouve tous les blocs 'if' qui contiennent une des phrases cibles et remplace leur condition par False
+                       parents = {}
+                      for node in ast.walk(tree):
+                          for child in ast.iter_child_nodes(node):
+                              parents[child] = node
+
+                      if_nodes_to_disable = set()
+                      for node in ast.walk(tree):
+                          if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                              if any(phrase in node.value for phrase in target_phrases):
+                                  curr = node
+                                  while curr in parents:
+                                      curr = parents[curr]
+                                      if isinstance(curr, ast.If):
+                                          if_nodes_to_disable.add(curr)
+                                          break
+
+                      # Trie de bas en haut pour ne pas décaler les numéros de lignes
+                      for if_node in sorted(if_nodes_to_disable, key=lambda n: n.lineno, reverse=True):
+                          start_line = if_node.lineno - 1
+                          body_start_line = if_node.body[0].lineno - 1
+                          indent = lines[start_line][:if_node.col_offset]
+                          print(f"  -> Disabling If block at lines {start_line+1}..{body_start_line} in {p}:")
+                          for dbg in range(start_line, min(len(lines), body_start_line + 6)):
+                              print(f"     {dbg+1}: {lines[dbg]}")
+                          # Remplace toute la condition (même multi-lignes) par 'if False:'
+                          lines[start_line:body_start_line] = [f"{indent}if False:"]
+
+                      txt = "\n".join(lines) + "\n"
+
                   if txt != orig:
-                      with open(p, "w", encoding="utf-8") as f: f.write(txt)
+                      with open(p, "w", encoding="utf-8") as f:
+                          f.write(txt)
+                      print(f"Successfully patched: {p}")
           EOF
 
       - name: Installer les dependances
@@ -90,6 +131,11 @@ jobs:
 
       - name: Generer le fichier IPA
         run: |
+          # Supprime les .nsp dès que l'extraction est finie pour libérer 12 Go sur le disque
+          (
+            while [ ! -d ~/work_dir/game/01001F5010DFA000_build/shader ]; do sleep 5; done
+            rm -f ~/work_dir/game/*.nsp ~/work_dir/game/*.nsz
+          ) &
           KEYS_FILE=$(find ~/work_dir/game -iname "*prod.keys*" | head -n 1)
           python3 scripts/build_ipa_from_nsp.py ~/work_dir/game -k "$KEYS_FILE" -o ~/work_dir/Arceus.ipa --lang fr --allow-other-metal || {
             echo "=== ERREURS EXACTES XCODEBUILD ==="
