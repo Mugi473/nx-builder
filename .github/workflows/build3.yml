@@ -69,6 +69,6 @@ jobs:
       - name: Uploader le fichier IPA
         uses: actions/upload-artifact@v4
         with:
-          name: Pokemon-Diamant-IPA
-          path: ~/work_dir/Pokemon_BD.ipa
+          name: Arceus-IPA
+          path: ~/work_dir/Arceus.ipa
           retention-days: 1
