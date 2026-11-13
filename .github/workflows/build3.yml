@@ -25,7 +25,7 @@ jobs:
           echo "Xcode selectionne : $LATEST_XCODE"
           sudo xcode-select -s "$LATEST_XCODE"
           
-          # Nettoyage rapide pour éviter le manque d'espace disque avec Arceus
+          # Nettoyage rapide pour laisser ~140 Go libres sur le disque
           sudo rm -rf /Library/Developer/CoreSimulator /Users/runner/hostedtoolcache /Applications/Android*
           
           # 1. Patchs SDK iOS 27 et MetalFX (nvn_mtl.m)
@@ -114,23 +114,19 @@ jobs:
           find ~/work_dir/game -type f -exec mv -i {} ~/work_dir/game/ \; 2>/dev/null || true
           ls -la ~/work_dir/game
 
-      - name: Restaurer le cache des Shaders iOS (Arceus)
+      - name: Restaurer le cache Rewrite (Arceus)
         uses: actions/cache/restore@v4
         with:
           path: |
-            ~/work_dir/game/01001F5010DFA000_build/shader
             ~/work_dir/game/01001F5010DFA000_build/rewrite
-          key: shaders-arceus-${{ github.run_id }}
+          key: rewrite-arceus-${{ github.run_id }}
           restore-keys: |
+            rewrite-arceus-
             shaders-arceus-
 
       - name: Generer le fichier IPA
         run: |
-          # Supprime les .nsp dès que l'extraction est finie pour libérer 12 Go sur le disque
-          (
-            while [ ! -d ~/work_dir/game/01001F5010DFA000_build/shader ]; do sleep 5; done
-            rm -f ~/work_dir/game/*.nsp ~/work_dir/game/*.nsz
-          ) &
+          rm -rf ~/work_dir/game/01001F5010DFA000_build/shader
           KEYS_FILE=$(find ~/work_dir/game -iname "*prod.keys*" | head -n 1)
           python3 scripts/build_ipa_from_nsp.py ~/work_dir/game -k "$KEYS_FILE" -o ~/work_dir/Arceus.ipa --lang fr --allow-other-metal || {
             echo "=== ERREURS EXACTES XCODEBUILD ==="
@@ -138,14 +134,14 @@ jobs:
             exit 1
           }
 
-      - name: Sauvegarder le cache des Shaders iOS (Arceus)
+      - name: Sauvegarder le cache Rewrite et Shaders (Arceus)
         if: always()
         uses: actions/cache/save@v4
         with:
           path: |
-            ~/work_dir/game/01001F5010DFA000_build/shader
             ~/work_dir/game/01001F5010DFA000_build/rewrite
-          key: shaders-arceus-${{ github.run_id }}
+            ~/work_dir/game/01001F5010DFA000_build/shader
+          key: rewrite-arceus-${{ github.run_id }}
 
       - name: Uploader le fichier IPA
         uses: actions/upload-artifact@v4
