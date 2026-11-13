@@ -34,9 +34,16 @@ jobs:
           find . -name "nvn_mtl.m" -exec sed -i '' 's/.*outputOffsetX.*/\/\/ patched MTL4FXTemporalScaler output offsets/g' {} +
           find dm/ios -name "*.swift" -exec sed -i '' 's/if #available(iOS 27/if #available(iOS 99/g' {} +
 
-          # 2. Patch AST Python infaillible pour neutraliser les blocages [4/7] shader split
+          # 2. Patch ciblé uniquement sur scripts/build_ipa_from_nsp.py (avec validation syntaxique AST)
           python3 - << 'EOF'
-          import os, ast
+          import ast
+
+          p = "scripts/build_ipa_from_nsp.py"
+          with open(p, "r", encoding="utf-8") as f:
+              txt = f.read()
+
+          txt = txt.replace("5 * 1024 * 1024 * 1024", "100 * 1024 * 1024")
+          txt = txt.replace("5_000_000_000", "100_000_000")
 
           target_phrases = (
               "shaders are left out",
@@ -45,54 +52,56 @@ jobs:
               "only in the profile",
           )
 
-          for root, _, files in os.walk("."):
-              if ".git" in root:
-                  continue
-              for fname in files:
-                  if not fname.endswith(".py"):
-                      continue
-                  p = os.path.join(root, fname)
-                  with open(p, "r", encoding="utf-8", errors="ignore") as f:
-                      txt = f.read()
-                  orig = txt
+          tree = ast.parse(txt)
+          lines = txt.splitlines()
 
-                  txt = txt.replace("5 * 1024 * 1024 * 1024", "100 * 1024 * 1024")
-                  txt = txt.replace("5_000_000_000", "100_000_000")
+          parents = {}
+          for node in ast.walk(tree):
+              for child in ast.iter_child_nodes(node):
+                  parents[child] = node
 
-                  if any(phrase in txt for phrase in target_phrases):
-                      print(f"Inspecting AST of: {p}")
-                      tree = ast.parse(txt)
-                      lines = txt.splitlines()
+          if_nodes = set()
+          for node in ast.walk(tree):
+              if isinstance(node, ast.Constant) and isinstance(node.value, str):
+                  if any(phrase in node.value for phrase in target_phrases):
+                      curr = node
+                      while curr in parents:
+                          curr = parents[curr]
+                          if isinstance(curr, ast.If):
+                              if_nodes.add(curr)
+                              break
 
-                      parents = {}
-                      for node in ast.walk(tree):
-                          for child in ast.iter_child_nodes(node):
-                              parents[child] = node
+          # Ignore les 'if' imbriqués à l'intérieur d'un 'if' déjà sélectionné
+          top_if_nodes = []
+          for n in if_nodes:
+              curr = n
+              is_nested = False
+              while curr in parents:
+                  curr = parents[curr]
+                  if curr in if_nodes:
+                      is_nested = True
+                      break
+              if not is_nested:
+                  top_if_nodes.append(n)
 
-                      if_nodes_to_disable = set()
-                      for node in ast.walk(tree):
-                          if isinstance(node, ast.Constant) and isinstance(node.value, str):
-                              if any(phrase in node.value for phrase in target_phrases):
-                                  curr = node
-                                  while curr in parents:
-                                      curr = parents[curr]
-                                      if isinstance(curr, ast.If):
-                                          if_nodes_to_disable.add(curr)
-                                          break
+          for if_node in sorted(top_if_nodes, key=lambda n: n.lineno, reverse=True):
+              start = if_node.lineno - 1
+              end = if_node.end_lineno
+              indent = " " * if_node.col_offset
+              print(f"Disabling check in {p} lines {start+1}..{end}:")
+              for k in range(start, min(len(lines), end)):
+                  print(f"  {k+1}: {lines[k]}")
+              lines[start:end] = [
+                  f"{indent}if False:",
+                  f"{indent}    pass"
+              ]
 
-                      for if_node in sorted(if_nodes_to_disable, key=lambda n: n.lineno, reverse=True):
-                          start_line = if_node.lineno - 1
-                          body_start_line = if_node.body[0].lineno - 1
-                          indent = lines[start_line][:if_node.col_offset]
-                          print(f"  -> Disabling If block at lines {start_line+1}..{body_start_line} in {p}")
-                          lines[start_line:body_start_line] = [f"{indent}if False:"]
-
-                      txt = "\n".join(lines) + "\n"
-
-                  if txt != orig:
-                      with open(p, "w", encoding="utf-8") as f:
-                          f.write(txt)
-                      print(f"Successfully patched: {p}")
+          new_txt = "\n".join(lines) + "\n"
+          # Vérifie que la syntaxe Python est 100 % valide avant d'écrire
+          ast.parse(new_txt)
+          with open(p, "w", encoding="utf-8") as f:
+              f.write(new_txt)
+          print("Successfully patched and verified scripts/build_ipa_from_nsp.py")
           EOF
 
       - name: Installer les dependances
@@ -119,10 +128,9 @@ jobs:
         with:
           path: |
             ~/work_dir/game/01001F5010DFA000_build/rewrite
-          key: rewrite-arceus-${{ github.run_id }}
+          key: arceus-rewrite-${{ github.run_id }}
           restore-keys: |
-            rewrite-arceus-
-            shaders-arceus-
+            arceus-rewrite-
 
       - name: Generer le fichier IPA
         run: |
@@ -134,14 +142,13 @@ jobs:
             exit 1
           }
 
-      - name: Sauvegarder le cache Rewrite et Shaders (Arceus)
+      - name: Sauvegarder le cache Rewrite (Arceus)
         if: always()
         uses: actions/cache/save@v4
         with:
           path: |
             ~/work_dir/game/01001F5010DFA000_build/rewrite
-            ~/work_dir/game/01001F5010DFA000_build/shader
-          key: rewrite-arceus-${{ github.run_id }}
+          key: arceus-rewrite-${{ github.run_id }}
 
       - name: Uploader le fichier IPA
         uses: actions/upload-artifact@v4
