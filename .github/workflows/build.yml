@@ -43,6 +43,8 @@ jobs:
           sudo rm -rf /Library/Developer/CoreSimulator /Users/runner/hostedtoolcache /opt/homebrew/Cellar/llvm* /Applications/Android*
           df -h
           sed -i '' 's/.*deviceMotionBody.*/\/\/ patched for iOS 26.2 SDK/g' dm/ios/Sources/DmGamepad.m
+          sed -i '' 's/.*ContentOffsetX.*/\/\/ patched MTL4FXTemporalScaler offsets/g' gfx/nvn/nvn_mtl.m
+          sed -i '' 's/.*outputOffsetX.*/\/\/ patched MTL4FXTemporalScaler output offsets/g' gfx/nvn/nvn_mtl.m
           find dm/ios -name "*.swift" -exec sed -i '' 's/if #available(iOS 27/if #available(iOS 99/g' {} +
           find scripts -name "*.py" -exec sed -i '' 's/5 \* 1024 \* 1024 \* 1024/100 * 1024 * 1024/g' {} +
           find scripts -name "*.py" -exec sed -i '' 's/5_000_000_000/100_000_000/g' {} +
