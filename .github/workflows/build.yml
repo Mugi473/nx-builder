@@ -49,15 +49,9 @@ jobs:
           find . -name "nvn_mtl.m" -exec sed -i '' 's/.*outputOffsetX.*/\/\/ patched MTL4FXTemporalScaler output offsets/g' {} +
           find dm/ios -name "*.swift" -exec sed -i '' 's/if #available(iOS 27/if #available(iOS 99/g' {} +
           
-          # 2. Inspecter et patcher shader_split + build_ipa_from_nsp.py pour continuer vers [5/7], [6/7], [7/7]
+          # 2. Patch shader_split + build_ipa_from_nsp.py pour enchaîner sur [5/7], [6/7], [7/7]
           python3 - << 'EOF'
-          import os, re
-
-          # Affiche hle_oodle.c pour voir comment DM_OODLE_SERVE fonctionne
-          if os.path.exists("dm/host/hle_oodle.c"):
-              print("=== dm/host/hle_oodle.c ===")
-              with open("dm/host/hle_oodle.c", "r", encoding="utf-8", errors="ignore") as f:
-                  print(f.read()[:4000])
+          import os
 
           for root, _, files in os.walk("scripts"):
               for fname in files:
@@ -72,16 +66,7 @@ jobs:
                   txt = txt.replace("5_000_000_000", "100_000_000")
 
                   if "the split shader tables differ" in txt or "shaders are left out" in txt:
-                      print(f"=== Context around line 2249 in {p} ===")
                       lines = txt.splitlines()
-                      for idx, l in enumerate(lines):
-                          if "shaders are left out" in l or "the split shader tables differ" in l:
-                              for k in range(max(0, idx - 25), min(len(lines), idx + 45)):
-                                  print(f"{k+1}: {lines[k]}")
-                              print("="*50)
-
-                      # Neutralise les deux vérifications bloquantes dans shader_split :
-                      # 1) Vide le compteur/liste des fichiers GFPAK illisibles avant le check
                       for idx, l in enumerate(lines):
                           if "shaders are left out" in l:
                               for back in range(idx, max(-1, idx - 15), -1):
@@ -141,14 +126,14 @@ jobs:
           ls -lh ~/work_dir/game
           df -h
 
-      - name: Restaurer le cache (Rewrite + Shaders)
+      - name: Restaurer le cache (uniquement si même fichier relancé)
         uses: actions/cache/restore@v4
         with:
           path: |
             ~/work_dir/game/*_build/shader
             ~/work_dir/game/*_build/rewrite
             ~/work_dir/game/*_build/host
-          key: buildcache-${{ steps.gdrive.outputs.file_id }}-v1
+          key: buildcache-${{ steps.gdrive.outputs.file_id }}-${{ github.run_id }}
           restore-keys: |
             buildcache-${{ steps.gdrive.outputs.file_id }}-
 
@@ -170,7 +155,7 @@ jobs:
           fi
           python3 scripts/build_ipa_from_nsp.py ~/work_dir/game -k "$KEYS_FILE" -o ~/work_dir/NXNative_Game.ipa --lang fr --allow-other-metal $EXTRA_ARGS
 
-      - name: Sauvegarder le cache (Rewrite + Shaders)
+      - name: Sauvegarder le cache (pour les prochains essais de ce fichier)
         if: always()
         uses: actions/cache/save@v4
         with:
