@@ -25,7 +25,7 @@ jobs:
           echo "Xcode selectionne : $LATEST_XCODE"
           sudo xcode-select -s "$LATEST_XCODE"
           
-          # Nettoyage rapide pour éviter le manque d'espace disque avec Arceus + Suppression pack.zip plus bas
+          # Nettoyage rapide pour éviter le manque d'espace disque avec Arceus
           sudo rm -rf /Library/Developer/CoreSimulator /Users/runner/hostedtoolcache /Applications/Android*
           
           # 1. Patchs SDK iOS 27 et MetalFX (nvn_mtl.m)
@@ -70,8 +70,9 @@ jobs:
         run: |
           mkdir -p ~/work_dir/game
           FILE_ID=$(echo "${{ inputs.gdrive_id }}" | sed -n 's/.*\/d\/\([a-zA-Z0-9_-]*\).*/\1/p')
+          if [ -z "$FILE_ID" ]; then FILE_ID=$(echo "${{ inputs.gdrive_id }}" | sed -n 's/.*id=\([a-zA-Z0-9_-]*\).*/\1/p'); fi
           if [ -z "$FILE_ID" ]; then FILE_ID="${{ inputs.gdrive_id }}"; fi
-          python3 -m gdown --fuzzy "$FILE_ID" -O ~/work_dir/pack.zip
+          python3 -m gdown "$FILE_ID" -O ~/work_dir/pack.zip
           7z x ~/work_dir/pack.zip -o$HOME/work_dir/game -y
           rm -f ~/work_dir/pack.zip
           find ~/work_dir/game -type f -exec mv -i {} ~/work_dir/game/ \; 2>/dev/null || true
