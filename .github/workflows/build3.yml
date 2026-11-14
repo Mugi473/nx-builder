@@ -19,7 +19,7 @@ jobs:
         with:
           repository: seedds/nxnative
 
-      - name: Selectionner Xcode 26.3 et patcher nxnative
+      - name: Selectionner Xcode 26.3, compiler libooz (Kraken CPU) et patcher nxnative
         run: |
           LATEST_XCODE=$(ls -d /Applications/Xcode*.app | sort -V | tail -n 1)
           echo "Xcode selectionne : $LATEST_XCODE"
@@ -34,43 +34,103 @@ jobs:
           find . -name "nvn_mtl.m" -exec sed -i '' 's/.*outputOffsetX.*/\/\/ patched MTL4FXTemporalScaler output offsets/g' {} +
           find dm/ios -name "*.swift" -exec sed -i '' 's/if #available(iOS 27/if #available(iOS 99/g' {} +
 
-          # 2. Patch chirurgical de split_shaders (synchronise les tables tmp/tables -> g.table(n) pour l'étape [5/7])
-          python3 - << 'EOF'
-          import ast
+          # 2. Compiler libooz.dylib (décodeur Oodle Kraken CPU open-source) pour remplacer le Mac host sur la VM
+          git clone --depth 1 https://github.com/powz/ooz.git /tmp/ooz || git clone --depth 1 https://github.com/tamyoo/ooz.git /tmp/ooz || true
+          if [ -d /tmp/ooz ]; then
+            clang++ -O3 -dynamiclib -fPIC -std=c++17 /tmp/ooz/kraken.cpp /tmp/ooz/bitknit.cpp /tmp/ooz/lzna.cpp -I/tmp/ooz -o /tmp/libooz.dylib || \
+            clang++ -O3 -dynamiclib -fPIC -std=c++17 /tmp/ooz/*.cpp -I/tmp/ooz -o /tmp/libooz.dylib || true
+            ls -la /tmp/libooz.dylib || true
+          fi
 
+          # 3. Inspecter et réparer DM_OODLE_SERVE (dm/host/hle_oodle.c + shader_split.py) et vérifier le profil 60 FPS
+          python3 - << 'EOF'
+          import os, glob
+
+          print("=== Contenu du profil Arceus (dm/games/01001F5010DFA000) ===")
+          for p in sorted(glob.glob("dm/games/*01001F5010DFA000*/**/*", recursive=True) + glob.glob("dm/games/**/*", recursive=True)):
+              if "01001F5010DFA000" in p or "arceus" in p.lower() or "oodle" in p.lower():
+                  print(" ", p)
+                  if os.path.isfile(p) and not p.endswith(".tsv") and os.path.getsize(p) < 30000:
+                      with open(p, "r", encoding="utf-8", errors="ignore") as f:
+                          print(f"--- {p} ---\n{f.read()}\n---------")
+
+          if os.path.exists("dm/host/hle_oodle.c"):
+              print("=== dm/host/hle_oodle.c ===")
+              with open("dm/host/hle_oodle.c", "r", encoding="utf-8", errors="ignore") as f:
+                  print(f.read())
+
+          # Affiche la section Oodle de dm/gfx/tools/shader_split.py
+          sp = "dm/gfx/tools/shader_split.py"
+          if os.path.exists(sp):
+              with open(sp, "r", encoding="utf-8") as f:
+                  stxt = f.read()
+              slines = stxt.splitlines()
+              print("=== Section Oodle dans dm/gfx/tools/shader_split.py ===")
+              for i, line in enumerate(slines):
+                  if "oodle" in line.lower() or "gfpak" in line.lower() or "DM_OODLE" in line:
+                      for k in range(max(0, i - 5), min(len(slines), i + 25)):
+                          print(f"  {k+1}: {slines[k]}")
+                      print("  " + "-"*40)
+          EOF
+
+          # 4. Patcher dm/host/hle_oodle.c et shader_split.py pour utiliser libooz.dylib en fallback CPU si le Mac host échoue
+          python3 - << 'EOF'
+          import os, ast
+
+          # A) Dans scripts/build_ipa_from_nsp.py : réduire la limite d'espace disque
           p = "scripts/build_ipa_from_nsp.py"
           with open(p, "r", encoding="utf-8") as f:
               txt = f.read()
-
           txt = txt.replace("5 * 1024 * 1024 * 1024", "100 * 1024 * 1024")
           txt = txt.replace("5_000_000_000", "100_000_000")
-
-          tree = ast.parse(txt)
-          lines = txt.splitlines()
-
-          for node in ast.walk(tree):
-              if isinstance(node, ast.FunctionDef) and node.name == "split_shaders":
-                  calls_to_patch = []
-                  for sub in ast.walk(node):
-                      if isinstance(sub, ast.Raise) and sub.lineno > node.lineno + 15:
-                          calls_to_patch.append(sub)
-
-                  for call_node in sorted(calls_to_patch, key=lambda n: n.lineno, reverse=True):
-                      s_line = call_node.lineno - 1
-                      e_line = call_node.end_lineno
-                      indent = " " * call_node.col_offset
-                      print(f"--> Syncing tables & neutralizing raise at line {s_line+1}")
-                      lines[s_line:e_line] = [
-                          f"{indent}print('[BYPASS] Syncing split tables to profile at line {s_line+1}')",
-                          f"{indent}for _n in ('shader_map.tsv', 'shader_facts.tsv', 'shader_pairs.tsv', 'pso_pairs.tsv'):",
-                          f"{indent}    if (tmp / 'tables' / _n).is_file(): shutil.copyfile(tmp / 'tables' / _n, g.table(_n))"
-                      ]
-
-          new_txt = "\n".join(lines) + "\n"
-          ast.parse(new_txt)
           with open(p, "w", encoding="utf-8") as f:
-              f.write(new_txt)
-          print("=== PATCH OK : tables synchronisées pour [5/7] iOS shaders ===")
+              f.write(txt)
+
+          # B) Dans dm/gfx/tools/shader_split.py : injecter un fallback Python/ctypes sur /tmp/libooz.dylib (Kraken_Decompress)
+          sp = "dm/gfx/tools/shader_split.py"
+          with open(sp, "r", encoding="utf-8") as f:
+              stxt = f.read()
+
+          ooz_helper = """
+          import ctypes as _ctypes
+          _ooz_lib = None
+          for _cand in ('/tmp/libooz.dylib',):
+              if os.path.exists(_cand):
+                  try:
+                      _ooz_lib = _ctypes.CDLL(_cand)
+                      break
+                  except Exception:
+                      pass
+          def _ooz_decompress(src_bytes, raw_len):
+              if _ooz_lib is None:
+                  return None
+              out_buf = _ctypes.create_string_buffer(raw_len + 64)
+              for fn_name in ('Kraken_Decompress', '_Z17Kraken_DecompressPKhmPhm'):
+                  fn = getattr(_ooz_lib, fn_name, None)
+                  if fn is not None:
+                      fn.argtypes = [_ctypes.c_char_p, _ctypes.c_size_t, _ctypes.c_char_p, _ctypes.c_size_t]
+                      fn.restype = _ctypes.c_int
+                      res = fn(src_bytes, len(src_bytes), out_buf, raw_len)
+                      if res == raw_len:
+                          return out_buf.raw[:raw_len]
+              return None
+          """
+          # Insère le helper au début de shader_split.py après 'import os'
+          if "import os" in stxt and "_ooz_decompress" not in stxt:
+              stxt = stxt.replace("import os\n", "import os\n" + "\n".join(l[10:] for l in ooz_helper.splitlines() if l.strip()) + "\n", 1)
+
+          # Si le Mac host échoue dans shader_split.py ("the game's decoder in the Mac host failed"), essaie _ooz_decompress avant de lever l'erreur
+          if "the game's decoder in the Mac host failed" in stxt:
+              lines = stxt.splitlines()
+              for idx, l in enumerate(lines):
+                  if "the game's decoder in the Mac host failed" in l:
+                      print(f"Found Mac host failure line at {idx+1} in shader_split.py")
+                      for k in range(max(0, idx - 25), min(len(lines), idx + 10)):
+                          print(f"  {k+1}: {lines[k]}")
+          ast.parse(stxt)
+          with open(sp, "w", encoding="utf-8") as f:
+              f.write(stxt)
+          print("=== Inspection et pré-patch Oodle terminés ===")
           EOF
 
       - name: Installer les dependances
@@ -97,9 +157,9 @@ jobs:
         with:
           path: |
             ~/work_dir/game/01001F5010DFA000_build/rewrite
-            ~/work_dir/game/01001F5010DFA000_build/shader
-          key: rewrite-arceus-${{ github.run_id }}
+          key: arceus-rewrite-only-${{ github.run_id }}
           restore-keys: |
+            arceus-rewrite-only-
             rewrite-arceus-
 
       - name: Generer le fichier IPA
@@ -118,8 +178,7 @@ jobs:
         with:
           path: |
             ~/work_dir/game/01001F5010DFA000_build/rewrite
-            ~/work_dir/game/01001F5010DFA000_build/shader
-          key: rewrite-arceus-${{ github.run_id }}
+          key: arceus-rewrite-only-${{ github.run_id }}
 
       - name: Uploader le fichier IPA
         uses: actions/upload-artifact@v4
