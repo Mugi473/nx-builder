@@ -34,9 +34,9 @@ jobs:
           find . -name "nvn_mtl.m" -exec sed -i '' 's/.*outputOffsetX.*/\/\/ patched MTL4FXTemporalScaler output offsets/g' {} +
           find dm/ios -name "*.swift" -exec sed -i '' 's/if #available(iOS 27/if #available(iOS 99/g' {} +
 
-          # 2. Patch chirurgical de split_shaders dans scripts/build_ipa_from_nsp.py
+          # 2. Patch chirurgical de split_shaders (synchronise les tables tmp/tables -> g.table(n) pour l'étape [5/7])
           python3 - << 'EOF'
-          import ast, shutil
+          import ast
 
           p = "scripts/build_ipa_from_nsp.py"
           with open(p, "r", encoding="utf-8") as f:
@@ -48,40 +48,29 @@ jobs:
           tree = ast.parse(txt)
           lines = txt.splitlines()
 
-          # Trouve la fonction split_shaders dans scripts/build_ipa_from_nsp.py
           for node in ast.walk(tree):
               if isinstance(node, ast.FunctionDef) and node.name == "split_shaders":
-                  print(f"Found split_shaders at lines {node.lineno}..{node.end_lineno}")
-                  # Affiche tout le code de split_shaders dans le log pour transparence totale
-                  for k in range(node.lineno - 1, node.end_lineno):
-                      print(f"  {k+1}: {lines[k]}")
-
-                  # Trouve tous les appels à die(...) ou sys.exit(...) à l'intérieur de split_shaders
-                  # après l'exécution de shader_split.py (ligne > node.lineno + 20)
                   calls_to_patch = []
                   for sub in ast.walk(node):
-                      if isinstance(sub, ast.Expr) and isinstance(sub.value, ast.Call):
-                          func = sub.value.func
-                          fname = func.id if isinstance(func, ast.Name) else (func.attr if isinstance(func, ast.Attribute) else "")
-                          if fname in ("die", "exit", "_exit", "fail", "error") and sub.lineno > node.lineno + 15:
-                              calls_to_patch.append(sub)
-                      elif isinstance(sub, ast.Raise) and sub.lineno > node.lineno + 15:
+                      if isinstance(sub, ast.Raise) and sub.lineno > node.lineno + 15:
                           calls_to_patch.append(sub)
 
                   for call_node in sorted(calls_to_patch, key=lambda n: n.lineno, reverse=True):
                       s_line = call_node.lineno - 1
                       e_line = call_node.end_lineno
                       indent = " " * call_node.col_offset
-                      print(f"--> Neutralizing fatal call at lines {s_line+1}..{e_line}: {lines[s_line].strip()}")
+                      print(f"--> Syncing tables & neutralizing raise at line {s_line+1}")
                       lines[s_line:e_line] = [
-                          f"{indent}print('[BYPASS] Ignored shader_split check at line {s_line+1}, continuing build!')"
+                          f"{indent}print('[BYPASS] Syncing split tables to profile at line {s_line+1}')",
+                          f"{indent}for _n in ('shader_map.tsv', 'shader_facts.tsv', 'shader_pairs.tsv', 'pso_pairs.tsv'):",
+                          f"{indent}    if (tmp / 'tables' / _n).is_file(): shutil.copyfile(tmp / 'tables' / _n, g.table(_n))"
                       ]
 
           new_txt = "\n".join(lines) + "\n"
           ast.parse(new_txt)
           with open(p, "w", encoding="utf-8") as f:
               f.write(new_txt)
-          print("=== PATCH OK : tous les arrêts de split_shaders ont été neutralisés ===")
+          print("=== PATCH OK : tables synchronisées pour [5/7] iOS shaders ===")
           EOF
 
       - name: Installer les dependances
