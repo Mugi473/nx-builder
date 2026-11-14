@@ -34,7 +34,7 @@ jobs:
           find . -name "nvn_mtl.m" -exec sed -i '' 's/.*outputOffsetX.*/\/\/ patched MTL4FXTemporalScaler output offsets/g' {} +
           find dm/ios -name "*.swift" -exec sed -i '' 's/if #available(iOS 27/if #available(iOS 99/g' {} +
 
-          # 2. Patch ciblé uniquement sur scripts/build_ipa_from_nsp.py (avec validation syntaxique AST)
+          # 2. Patch ciblé UNIQUEMENT sur scripts/build_ipa_from_nsp.py (ne touche jamais à shader_split.py)
           python3 - << 'EOF'
           import ast
 
@@ -71,7 +71,6 @@ jobs:
                               if_nodes.add(curr)
                               break
 
-          # Ignore les 'if' imbriqués à l'intérieur d'un 'if' déjà sélectionné
           top_if_nodes = []
           for n in if_nodes:
               curr = n
@@ -97,11 +96,10 @@ jobs:
               ]
 
           new_txt = "\n".join(lines) + "\n"
-          # Vérifie que la syntaxe Python est 100 % valide avant d'écrire
           ast.parse(new_txt)
           with open(p, "w", encoding="utf-8") as f:
               f.write(new_txt)
-          print("Successfully patched and verified scripts/build_ipa_from_nsp.py")
+          print("=== PATCH OK : scripts/build_ipa_from_nsp.py ===")
           EOF
 
       - name: Installer les dependances
@@ -128,9 +126,10 @@ jobs:
         with:
           path: |
             ~/work_dir/game/01001F5010DFA000_build/rewrite
-          key: arceus-rewrite-${{ github.run_id }}
+            ~/work_dir/game/01001F5010DFA000_build/shader
+          key: rewrite-arceus-${{ github.run_id }}
           restore-keys: |
-            arceus-rewrite-
+            rewrite-arceus-
 
       - name: Generer le fichier IPA
         run: |
@@ -148,7 +147,8 @@ jobs:
         with:
           path: |
             ~/work_dir/game/01001F5010DFA000_build/rewrite
-          key: arceus-rewrite-${{ github.run_id }}
+            ~/work_dir/game/01001F5010DFA000_build/shader
+          key: rewrite-arceus-${{ github.run_id }}
 
       - name: Uploader le fichier IPA
         uses: actions/upload-artifact@v4
