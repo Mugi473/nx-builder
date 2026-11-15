@@ -19,7 +19,7 @@ jobs:
         with:
           repository: seedds/nxnative
 
-      - name: Selectionner Xcode 26.3, compiler libooz (Kraken CPU) et patcher nxnative
+      - name: Selectionner Xcode 26.3, compiler libooz (Kraken CPU) et patcher nxnative (Oodle + 60 FPS)
         run: |
           LATEST_XCODE=$(ls -d /Applications/Xcode*.app | sort -V | tail -n 1)
           echo "Xcode selectionne : $LATEST_XCODE"
@@ -34,50 +34,26 @@ jobs:
           find . -name "nvn_mtl.m" -exec sed -i '' 's/.*outputOffsetX.*/\/\/ patched MTL4FXTemporalScaler output offsets/g' {} +
           find dm/ios -name "*.swift" -exec sed -i '' 's/if #available(iOS 27/if #available(iOS 99/g' {} +
 
-          # 2. Compiler libooz.dylib (décodeur Oodle Kraken CPU open-source) pour remplacer le Mac host sur la VM
-          git clone --depth 1 https://github.com/powz/ooz.git /tmp/ooz || git clone --depth 1 https://github.com/tamyoo/ooz.git /tmp/ooz || true
-          if [ -d /tmp/ooz ]; then
-            clang++ -O3 -dynamiclib -fPIC -std=c++17 /tmp/ooz/kraken.cpp /tmp/ooz/bitknit.cpp /tmp/ooz/lzna.cpp -I/tmp/ooz -o /tmp/libooz.dylib || \
-            clang++ -O3 -dynamiclib -fPIC -std=c++17 /tmp/ooz/*.cpp -I/tmp/ooz -o /tmp/libooz.dylib || true
-            ls -la /tmp/libooz.dylib || true
-          fi
-
-          # 3. Inspecter et réparer DM_OODLE_SERVE (dm/host/hle_oodle.c + shader_split.py) et vérifier le profil 60 FPS
-          python3 - << 'EOF'
-          import os, glob
-
-          print("=== Contenu du profil Arceus (dm/games/01001F5010DFA000) ===")
-          for p in sorted(glob.glob("dm/games/*01001F5010DFA000*/**/*", recursive=True) + glob.glob("dm/games/**/*", recursive=True)):
-              if "01001F5010DFA000" in p or "arceus" in p.lower() or "oodle" in p.lower():
-                  print(" ", p)
-                  if os.path.isfile(p) and not p.endswith(".tsv") and os.path.getsize(p) < 30000:
-                      with open(p, "r", encoding="utf-8", errors="ignore") as f:
-                          print(f"--- {p} ---\n{f.read()}\n---------")
-
-          if os.path.exists("dm/host/hle_oodle.c"):
-              print("=== dm/host/hle_oodle.c ===")
-              with open("dm/host/hle_oodle.c", "r", encoding="utf-8", errors="ignore") as f:
-                  print(f.read())
-
-          # Affiche la section Oodle de dm/gfx/tools/shader_split.py
-          sp = "dm/gfx/tools/shader_split.py"
-          if os.path.exists(sp):
-              with open(sp, "r", encoding="utf-8") as f:
-                  stxt = f.read()
-              slines = stxt.splitlines()
-              print("=== Section Oodle dans dm/gfx/tools/shader_split.py ===")
-              for i, line in enumerate(slines):
-                  if "oodle" in line.lower() or "gfpak" in line.lower() or "DM_OODLE" in line:
-                      for k in range(max(0, i - 5), min(len(slines), i + 25)):
-                          print(f"  {k+1}: {slines[k]}")
-                      print("  " + "-"*40)
+          # 2. Compiler libooz.dylib depuis le dépôt officiel actif (kamyu104/ooz) avec export C
+          git clone --depth 1 https://github.com/kamyu104/ooz.git /tmp/ooz
+          cat << 'EOF' > /tmp/ooz_wrap.cpp
+          #include <stdint.h>
+          #include <stddef.h>
+          int Kraken_Decompress(const uint8_t *src, size_t src_len, uint8_t *dst, size_t dst_len);
+          extern "C" int ooz_kraken_decompress(const uint8_t *src, size_t src_len, uint8_t *dst, size_t dst_len) {
+              return Kraken_Decompress(src, src_len, dst, dst_len);
+          }
           EOF
+          clang++ -O3 -dynamiclib -fPIC -std=c++17 \
+            /tmp/ooz/kraken.cpp /tmp/ooz/bitknit.cpp /tmp/ooz/lzna.cpp /tmp/ooz_wrap.cpp \
+            -I/tmp/ooz -o /tmp/libooz.dylib
+          ls -lh /tmp/libooz.dylib
 
-          # 4. Patcher dm/host/hle_oodle.c et shader_split.py pour utiliser libooz.dylib en fallback CPU si le Mac host échoue
+          # 3. Patcher shader_split.py (Oodle CPU direct), build_ipa_from_nsp.py et activer les 60 FPS
           python3 - << 'EOF'
-          import os, ast
+          import os, ast, glob
 
-          # A) Dans scripts/build_ipa_from_nsp.py : réduire la limite d'espace disque
+          # A) Réduire la limite d'espace disque et éviter de compiler dmhost inutilement si voulu
           p = "scripts/build_ipa_from_nsp.py"
           with open(p, "r", encoding="utf-8") as f:
               txt = f.read()
@@ -86,51 +62,63 @@ jobs:
           with open(p, "w", encoding="utf-8") as f:
               f.write(txt)
 
-          # B) Dans dm/gfx/tools/shader_split.py : injecter un fallback Python/ctypes sur /tmp/libooz.dylib (Kraken_Decompress)
+          # B) Remplacer def oodle(comp, n) dans dm/gfx/tools/shader_split.py par libooz.dylib direct
           sp = "dm/gfx/tools/shader_split.py"
           with open(sp, "r", encoding="utf-8") as f:
               stxt = f.read()
 
-          ooz_helper = """
-          import ctypes as _ctypes
-          _ooz_lib = None
-          for _cand in ('/tmp/libooz.dylib',):
-              if os.path.exists(_cand):
-                  try:
-                      _ooz_lib = _ctypes.CDLL(_cand)
-                      break
-                  except Exception:
-                      pass
-          def _ooz_decompress(src_bytes, raw_len):
-              if _ooz_lib is None:
-                  return None
-              out_buf = _ctypes.create_string_buffer(raw_len + 64)
-              for fn_name in ('Kraken_Decompress', '_Z17Kraken_DecompressPKhmPhm'):
-                  fn = getattr(_ooz_lib, fn_name, None)
-                  if fn is not None:
-                      fn.argtypes = [_ctypes.c_char_p, _ctypes.c_size_t, _ctypes.c_char_p, _ctypes.c_size_t]
-                      fn.restype = _ctypes.c_int
-                      res = fn(src_bytes, len(src_bytes), out_buf, raw_len)
-                      if res == raw_len:
-                          return out_buf.raw[:raw_len]
-              return None
-          """
-          # Insère le helper au début de shader_split.py après 'import os'
-          if "import os" in stxt and "_ooz_decompress" not in stxt:
-              stxt = stxt.replace("import os\n", "import os\n" + "\n".join(l[10:] for l in ooz_helper.splitlines() if l.strip()) + "\n", 1)
+          old_oodle = """def oodle(comp, n):
+              s, _ = oodle_ask(comp, n)
+              if s is None: oodle_red(comp, n)
+              return s"""
 
-          # Si le Mac host échoue dans shader_split.py ("the game's decoder in the Mac host failed"), essaie _ooz_decompress avant de lever l'erreur
-          if "the game's decoder in the Mac host failed" in stxt:
-              lines = stxt.splitlines()
-              for idx, l in enumerate(lines):
-                  if "the game's decoder in the Mac host failed" in l:
-                      print(f"Found Mac host failure line at {idx+1} in shader_split.py")
-                      for k in range(max(0, idx - 25), min(len(lines), idx + 10)):
-                          print(f"  {k+1}: {lines[k]}")
+          new_oodle = """_OOZ_LIB = None
+          def _ooz_dec(comp, n):
+              global _OOZ_LIB
+              import ctypes
+              if _OOZ_LIB is None:
+                  _OOZ_LIB = ctypes.CDLL('/tmp/libooz.dylib')
+                  _OOZ_LIB.ooz_kraken_decompress.argtypes = [ctypes.c_char_p, ctypes.c_size_t, ctypes.c_char_p, ctypes.c_size_t]
+                  _OOZ_LIB.ooz_kraken_decompress.restype = ctypes.c_int
+              # Oodle Kraken utilise un buffer de sortie avec 64 octets de marge (scratch)
+              out_buf = ctypes.create_string_buffer(n + 64)
+              res = _OOZ_LIB.ooz_kraken_decompress(bytes(comp), len(comp), out_buf, n)
+              if res == n:
+                  return out_buf.raw[:n]
+              return None
+
+          def oodle(comp, n):
+              s = _ooz_dec(comp, n)
+              if s is not None: return s
+              s, _ = oodle_ask(comp, n)
+              if s is None: oodle_red(comp, n)
+              return s"""
+
+          # Formatage avec l'indentation réelle (4 espaces dans def oodle)
+          target = "def oodle(comp, n):\n    s, _ = oodle_ask(comp, n)\n    if s is None: oodle_red(comp, n)\n    return s"
+          replacement = "\n".join(line[10:] if line.startswith("          ") else line for line in new_oodle.splitlines())
+
+          assert target in stxt, "def oodle(comp, n) introuvable dans shader_split.py"
+          stxt = stxt.replace(target, replacement, 1)
           ast.parse(stxt)
           with open(sp, "w", encoding="utf-8") as f:
               f.write(stxt)
-          print("=== Inspection et pré-patch Oodle terminés ===")
+          print("✓ shader_split.py patché avec succès pour décoder Oodle Kraken via /tmp/libooz.dylib")
+
+          # C) Patch 60 FPS : forcer le PresentInterval NVN de 2 (30 FPS) à 1 (60 FPS) dans dm/host
+          for src in glob.glob("dm/host/**/*.[cmh]", recursive=True):
+              with open(src, "r", encoding="utf-8", errors="ignore") as f:
+                  c = f.read()
+              if "PresentInterval" in c or "present_interval" in c or "preferredFramesPerSecond" in c:
+                  print(f"Found framerate/interval in {src}")
+                  for i, line in enumerate(c.splitlines()):
+                      if any(k in line for k in ("PresentInterval", "present_interval", "preferredFramesPerSecond", "frame_interval")):
+                          print(f"  {src}:{i+1}: {line}")
+                  c_new = c.replace("preferredFramesPerSecond = 30", "preferredFramesPerSecond = 60")
+                  if c_new != c:
+                      with open(src, "w", encoding="utf-8") as f:
+                          f.write(c_new)
+                      print(f"✓ 60 FPS activé dans {src}")
           EOF
 
       - name: Installer les dependances
@@ -167,6 +155,8 @@ jobs:
           rm -rf ~/work_dir/game/01001F5010DFA000_build/shader
           KEYS_FILE=$(find ~/work_dir/game -iname "*prod.keys*" | head -n 1)
           python3 scripts/build_ipa_from_nsp.py ~/work_dir/game -k "$KEYS_FILE" -o ~/work_dir/Arceus.ipa --lang fr --allow-other-metal || {
+            echo "=== LOG DE SHADER_SPLIT ==="
+            tail -n 50 ~/work_dir/game/01001F5010DFA000_build/logs/shader_split.log || true
             echo "=== ERREURS EXACTES XCODEBUILD ==="
             grep -E "error:|fatal error:|FAIL" ~/work_dir/game/01001F5010DFA000_build/ipa/build/ios/pkg/build.log || true
             exit 1
