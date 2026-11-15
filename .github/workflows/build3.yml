@@ -19,136 +19,12 @@ jobs:
         with:
           repository: seedds/nxnative
 
-      - name: Installer les dépendances externes
-        run: |
-          brew install simde libsodium
-          # Installer unicase manuellement
-          mkdir -p ~/work_dir/unicase
-          curl -L https://github.com/unicase/unicase/archive/refs/tags/0.9.2.tar.gz -o ~/work_dir/unicase/unicase-0.9.2.tar.gz
-          tar -xf ~/work_dir/unicase/unicase-0.9.2.tar.gz -C ~/work_dir/unicase
-          cd ~/work_dir/unicase/unicase-0.9.2
-          ./configure
-          make
-          sudo make install
-
-      - name: Selectionner Xcode 26.3, installer pyooz et patcher nxnative (Oodle + 60 FPS)
-        run: |
-          LATEST_XCODE=$(ls -d /Applications/Xcode*.app | sort -V | tail -n 1)
-          echo "Xcode selectionné : $LATEST_XCODE"
-          sudo xcode-select -s "$LATEST_XCODE"
-          
-          # Nettoyage rapide pour laisser ~140 Go libres sur le disque
-          sudo rm -rf /Library/Developer/CoreSimulator /Users/runner/hostedtoolcache /Applications/Android*
-          
-          # 1. Patchs SDK iOS 27 et MetalFX (nvn_mtl.m)
-          sed -i '' 's/.*deviceMotionBody.*/\/\/ patched for iOS 26.2 SDK/g' dm/ios/Sources/DmGamepad.m
-          find . -name "nvn_mtl.m" -exec sed -i '' 's/.*ContentOffsetX.*/\/\/ patched MTL4FXTemporalScaler offsets/g' {} +
-          find . -name "nvn_mtl.m" -exec sed -i '' 's/.*outputOffsetX.*/\/\/ patched MTL4FXTemporalScaler output offsets/g' {} +
-          find dm/ios -name "*.swift" -exec sed -i '' 's/if #available(iOS 27/if #available(iOS 99/g' {} +
-
-          # 2. Installer et compiler libooz depuis PyPI (sans passer par GitHub)
-          python3 -m pip install --break-system-packages pyooz || true
-          mkdir -p /tmp/ooz_pkg
-          python3 -m pip download --no-binary :all: --no-deps pyooz -d /tmp/ooz_pkg || true
-          for f in /tmp/ooz_pkg/*.tar.gz /tmp/ooz_pkg/*.zip; do
-            if [ -f "$f" ]; then tar -xf "$f" -C /tmp/ooz_pkg; fi
-          done
-          KRK_CPP=$(find /tmp/ooz_pkg -name "kraken.cpp" | head -n 1)
-          if [ -n "$KRK_CPP" ]; then
-            OOZ_DIR=$(dirname "$KRK_CPP")
-            echo "Sources ooz trouvées dans : $OOZ_DIR"
-            cat << 'EOF' > /tmp/ooz_wrap.cpp
-          #include <stdint.h>
-          #include <stddef.h>
-          int Kraken_Decompress(const uint8_t *src, size_t src_len, uint8_t *dst, size_t dst_len);
-          extern "C" int ooz_kraken_decompress(const uint8_t *src, size_t src_len, uint8_t *dst, size_t dst_len) {
-              return Kraken_Decompress(src, src_len, dst, dst_len);
-          }
-          EOF
-            clang++ -O3 -dynamiclib -fPIC -std=c++17 \
-              "$OOZ_DIR"/kraken.cpp "$OOZ_DIR"/bitknit.cpp "$OOZ_DIR"/lzna.cpp /tmp/ooz_wrap.cpp \
-              -I"$OOZ_DIR" -o /tmp/libooz.dylib || \
-            clang++ -O3 -dynamiclib -fPIC -std=c++17 \
-              "$OOZ_DIR"/*.cpp /tmp/ooz_wrap.cpp \
-              -I"$OOZ_DIR" -o /tmp/libooz.dylib || true
-            ls -lh /tmp/libooz.dylib || true
-          fi
-
-          # 3. Patcher shader_split.py (Oodle CPU direct), build_ipa_from_nsp.py et activer les 60 FPS
-          python3 - << 'EOF'
-          import os, ast, glob
-
-          # A) Réduire la limite d'espace disque
-          p = "scripts/build_ipa_from_nsp.py"
-          with open(p, "r", encoding="utf-8") as f:
-              txt = f.read()
-          txt = txt.replace("5 * 1024 * 1024 * 1024", "100 * 1024 * 1024")
-          txt = txt.replace("5_000_000_000", "100_000_000")
-          with open(p, "w", encoding="utf-8") as f:
-              f.write(txt)
-
-          # B) Remplacer def oodle(comp, n) dans dm/gfx/tools/shader_split.py par pyooz + libooz.dylib
-          sp = "dm/gfx/tools/shader_split.py"
-          with open(sp, "r", encoding="utf-8") as f:
-              stxt = f.read()
-
-          new_oodle = """_OOZ_LIB = None
-          def _ooz_dec(comp, n):
-              try:
-                  import ooz as _pyooz
-                  res = _pyooz.decompress(bytes(comp), n)
-                  if res is not None and len(res) == n:
-                      return bytes(res)
-              except Exception:
-                  pass
-              global _OOZ_LIB
-              import ctypes
-              if _OOZ_LIB is None and os.path.exists('/tmp/libooz.dylib'):
-                  _OOZ_LIB = ctypes.CDLL('/tmp/libooz.dylib')
-                  _OOZ_LIB.ooz_kraken_decompress.argtypes = [ctypes.c_char_p, ctypes.c_size_t, ctypes.c_char_p, ctypes.c_size_t]
-                  _OOZ_LIB.ooz_kraken_decompress.restype = ctypes.c_int
-              if _OOZ_LIB is not None:
-                  out_buf = ctypes.create_string_buffer(n + 64)
-                  res = _OOZ_LIB.ooz_kraken_decompress(bytes(comp), len(comp), out_buf, n)
-                  if res == n:
-                      return out_buf.raw[:n]
-              return None
-
-          def oodle(comp, n):
-              s = _ooz_dec(comp, n)
-              if s is not None: return s
-              s, _ = oodle_ask(comp, n)
-              if s is None: oodle_red(comp, n)
-              return s"""
-
-          target = "def oodle(comp, n):\n    s, _ = oodle_ask(comp, n)\n    if s is None: oodle_red(comp, n)\n    return s"
-          replacement = "\n".join(line[10:] if line.startswith("          ") else line for line in new_oodle.splitlines())
-
-          assert target in stxt, "def oodle(comp, n) introuvable dans shader_split.py"
-          stxt = stxt.replace(target, replacement, 1)
-          ast.parse(stxt)
-          with open(sp, "w", encoding="utf-8") as f:
-              f.write(stxt)
-          print("✓ shader_split.py patché avec succès (pyooz + /tmp/libooz.dylib)")
-
-          # C) Patch 60 FPS : forcer le PresentInterval NVN de 2 (30 FPS) à 1 (60 FPS) dans dm/host et dm/ios
-          for src in glob.glob("dm/**/*.[cmh]", recursive=True):
-              with open(src, "r", encoding="utf-8", errors="ignore") as f:
-                  c = f.read()
-              if any(k in c for k in ("PresentInterval", "present_interval", "preferredFramesPerSecond")):
-                  c_new = c.replace("preferredFramesPerSecond = 30", "preferredFramesPerSecond = 60")
-                  if c_new != c:
-                      with open(src, "w", encoding="utf-8") as f:
-                          f.write(c_new)
-                      print(f"✓ 60 FPS activé dans {src}")
-          EOF
-
       - name: Installer les dépendances
         run: |
           xcodebuild -downloadComponent MetalToolchain || true
           brew install xcodegen zstd glslang p7zip
           brew install --cask dotnet-sdk
-          python3 -m pip install --break-system-packages lz4 "capstone>=5,<6" fonttools zbic nsz gdown "backports.zstd; python_version < '3.14'"
+          python3 -m pip install --break-system-packages pyooz lz4 "capstone>=5,<6" fonttools zbic nsz gdown "backports.zstd; python_version < '3.14'"
 
       - name: Télécharger et extraire les fichiers
         run: |
@@ -171,6 +47,71 @@ jobs:
           restore-keys: |
             arceus-rewrite-only-
             rewrite-arceus-
+
+      - name: Patcher nxnative (Oodle + 60 FPS)
+        run: |
+          LATEST_XCODE=$(ls -d /Applications/Xcode*.app | sort -V | tail -n 1)
+          echo "Xcode sélectionné : $LATEST_XCODE"
+          sudo xcode-select -s "$LATEST_XCODE"
+          
+          # Nettoyage rapide pour laisser ~140 Go libres sur le disque
+          sudo rm -rf /Library/Developer/CoreSimulator /Users/runner/hostedtoolcache /Applications/Android*
+          
+          # 1. Patchs SDK iOS 27 et MetalFX (nvn_mtl.m)
+          sed -i '' 's/.*deviceMotionBody.*/\/\/ patched for iOS 26.2 SDK/g' dm/ios/Sources/DmGamepad.m
+          find . -name "nvn_mtl.m" -exec sed -i '' 's/.*ContentOffsetX.*/\/\/ patched MTL4FXTemporalScaler offsets/g' {} +
+          find . -name "nvn_mtl.m" -exec sed -i '' 's/.*outputOffsetX.*/\/\/ patched MTL4FXTemporalScaler output offsets/g' {} +
+          find dm/ios -name "*.swift" -exec sed -i '' 's/if #available(iOS 27/if #available(iOS 99/g' {} +
+
+          # 3. Patcher shader_split.py (Oodle CPU direct) et activer les 60 FPS
+          python3 - << 'EOF'
+          import os, ast, glob
+
+          # A) Réduire la limite d'espace disque
+          p = "scripts/build_ipa_from_nsp.py"
+          with open(p, "r", encoding="utf-8") as f:
+              txt = f.read()
+          txt = txt.replace("5 * 1024 * 1024 * 1024", "100 * 1024 * 1024")
+          txt = txt.replace("5_000_000_000", "100_000_000")
+          with open(p, "w", encoding="utf-8") as f:
+              f.write(txt)
+
+          # B) Remplacer def oodle(comp, n) dans dm/gfx/tools/shader_split.py par pyooz
+          sp = "dm/gfx/tools/shader_split.py"
+          with open(sp, "r", encoding="utf-8") as f:
+              stxt = f.read()
+
+          new_oodle = """def oodle(comp, n):
+              try:
+                  import ooz as _pyooz
+                  res = _pyooz.decompress(bytes(comp), n)
+                  if res is not None and len(res) == n:
+                      return bytes(res)
+              except Exception:
+                  pass
+              return None"""
+
+          target = "def oodle(comp, n):\n    s, _ = oodle_ask(comp, n)\n    if s is None: oodle_red(comp, n)\n    return s"
+          replacement = "\n".join(line[10:] if line.startswith("          ") else line for line in new_oodle.splitlines())
+
+          assert target in stxt, "def oodle(comp, n) introuvable dans shader_split.py"
+          stxt = stxt.replace(target, replacement, 1)
+          ast.parse(stxt)
+          with open(sp, "w", encoding="utf-8") as f:
+              f.write(stxt)
+          print("✓ shader_split.py patché avec succès (pyooz)")
+
+          # C) Patch 60 FPS : forcer le PresentInterval NVN de 2 (30 FPS) à 1 (60 FPS) dans dm/host et dm/ios
+          for src in glob.glob("dm/**/*.[cmh]", recursive=True):
+              with open(src, "r", encoding="utf-8", errors="ignore") as f:
+                  c = f.read()
+              if any(k in c for k in ("PresentInterval", "present_interval", "preferredFramesPerSecond")):
+                  c_new = c.replace("preferredFramesPerSecond = 30", "preferredFramesPerSecond = 60")
+                  if c_new != c:
+                      with open(src, "w", encoding="utf-8") as f:
+                          f.write(c_new)
+                      print(f"✓ 60 FPS activé dans {src}")
+          EOF
 
       - name: Générer le fichier IPA
         run: |
