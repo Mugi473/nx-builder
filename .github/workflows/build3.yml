@@ -19,7 +19,7 @@ jobs:
         with:
           repository: seedds/nxnative
 
-      - name: Selectionner Xcode 26.3, compiler libooz (Kraken CPU) et patcher nxnative (Oodle + 60 FPS)
+      - name: Selectionner Xcode 26.3, installer pyooz et patcher nxnative (Oodle + 60 FPS)
         run: |
           LATEST_XCODE=$(ls -d /Applications/Xcode*.app | sort -V | tail -n 1)
           echo "Xcode selectionne : $LATEST_XCODE"
@@ -34,11 +34,18 @@ jobs:
           find . -name "nvn_mtl.m" -exec sed -i '' 's/.*outputOffsetX.*/\/\/ patched MTL4FXTemporalScaler output offsets/g' {} +
           find dm/ios -name "*.swift" -exec sed -i '' 's/if #available(iOS 27/if #available(iOS 99/g' {} +
 
-          # 2. Télécharger et extraire les sources ooz sans git clone (via curl et tarball)
-          mkdir -p /tmp/ooz
-          curl -L https://github.com/kamyu104/ooz/archive/refs/heads/main.tar.gz | tar -xz -C /tmp/ooz --strip-components=1
-
-          cat << 'EOF' > /tmp/ooz_wrap.cpp
+          # 2. Installer et compiler libooz depuis PyPI (sans passer par GitHub)
+          python3 -m pip install --break-system-packages pyooz || true
+          mkdir -p /tmp/ooz_pkg
+          python3 -m pip download --no-binary :all: --no-deps pyooz -d /tmp/ooz_pkg || true
+          for f in /tmp/ooz_pkg/*.tar.gz /tmp/ooz_pkg/*.zip; do
+            if [ -f "$f" ]; then tar -xf "$f" -C /tmp/ooz_pkg; fi
+          done
+          KRK_CPP=$(find /tmp/ooz_pkg -name "kraken.cpp" | head -n 1)
+          if [ -n "$KRK_CPP" ]; then
+            OOZ_DIR=$(dirname "$KRK_CPP")
+            echo "Sources ooz trouvees dans : $OOZ_DIR"
+            cat << 'EOF' > /tmp/ooz_wrap.cpp
           #include <stdint.h>
           #include <stddef.h>
           int Kraken_Decompress(const uint8_t *src, size_t src_len, uint8_t *dst, size_t dst_len);
@@ -46,16 +53,20 @@ jobs:
               return Kraken_Decompress(src, src_len, dst, dst_len);
           }
           EOF
-          clang++ -O3 -dynamiclib -fPIC -std=c++17 \
-            /tmp/ooz/kraken.cpp /tmp/ooz/bitknit.cpp /tmp/ooz/lzna.cpp /tmp/ooz_wrap.cpp \
-            -I/tmp/ooz -o /tmp/libooz.dylib
-          ls -lh /tmp/libooz.dylib
+            clang++ -O3 -dynamiclib -fPIC -std=c++17 \
+              "$OOZ_DIR"/kraken.cpp "$OOZ_DIR"/bitknit.cpp "$OOZ_DIR"/lzna.cpp /tmp/ooz_wrap.cpp \
+              -I"$OOZ_DIR" -o /tmp/libooz.dylib || \
+            clang++ -O3 -dynamiclib -fPIC -std=c++17 \
+              "$OOZ_DIR"/*.cpp /tmp/ooz_wrap.cpp \
+              -I"$OOZ_DIR" -o /tmp/libooz.dylib || true
+            ls -lh /tmp/libooz.dylib || true
+          fi
 
           # 3. Patcher shader_split.py (Oodle CPU direct), build_ipa_from_nsp.py et activer les 60 FPS
           python3 - << 'EOF'
           import os, ast, glob
 
-          # A) Réduire la limite d'espace disque et éviter de compiler dmhost inutilement si voulu
+          # A) Réduire la limite d'espace disque
           p = "scripts/build_ipa_from_nsp.py"
           with open(p, "r", encoding="utf-8") as f:
               txt = f.read()
@@ -64,29 +75,31 @@ jobs:
           with open(p, "w", encoding="utf-8") as f:
               f.write(txt)
 
-          # B) Remplacer def oodle(comp, n) dans dm/gfx/tools/shader_split.py par libooz.dylib direct
+          # B) Remplacer def oodle(comp, n) dans dm/gfx/tools/shader_split.py par pyooz + libooz.dylib
           sp = "dm/gfx/tools/shader_split.py"
           with open(sp, "r", encoding="utf-8") as f:
               stxt = f.read()
 
-          old_oodle = """def oodle(comp, n):
-              s, _ = oodle_ask(comp, n)
-              if s is None: oodle_red(comp, n)
-              return s"""
-
           new_oodle = """_OOZ_LIB = None
           def _ooz_dec(comp, n):
+              try:
+                  import ooz as _pyooz
+                  res = _pyooz.decompress(bytes(comp), n)
+                  if res is not None and len(res) == n:
+                      return bytes(res)
+              except Exception:
+                  pass
               global _OOZ_LIB
               import ctypes
-              if _OOZ_LIB is None:
+              if _OOZ_LIB is None and os.path.exists('/tmp/libooz.dylib'):
                   _OOZ_LIB = ctypes.CDLL('/tmp/libooz.dylib')
                   _OOZ_LIB.ooz_kraken_decompress.argtypes = [ctypes.c_char_p, ctypes.c_size_t, ctypes.c_char_p, ctypes.c_size_t]
                   _OOZ_LIB.ooz_kraken_decompress.restype = ctypes.c_int
-              # Oodle Kraken utilise un buffer de sortie avec 64 octets de marge (scratch)
-              out_buf = ctypes.create_string_buffer(n + 64)
-              res = _OOZ_LIB.ooz_kraken_decompress(bytes(comp), len(comp), out_buf, n)
-              if res == n:
-                  return out_buf.raw[:n]
+              if _OOZ_LIB is not None:
+                  out_buf = ctypes.create_string_buffer(n + 64)
+                  res = _OOZ_LIB.ooz_kraken_decompress(bytes(comp), len(comp), out_buf, n)
+                  if res == n:
+                      return out_buf.raw[:n]
               return None
 
           def oodle(comp, n):
@@ -96,7 +109,6 @@ jobs:
               if s is None: oodle_red(comp, n)
               return s"""
 
-          # Formatage avec l'indentation réelle (4 espaces dans def oodle)
           target = "def oodle(comp, n):\n    s, _ = oodle_ask(comp, n)\n    if s is None: oodle_red(comp, n)\n    return s"
           replacement = "\n".join(line[10:] if line.startswith("          ") else line for line in new_oodle.splitlines())
 
@@ -105,17 +117,13 @@ jobs:
           ast.parse(stxt)
           with open(sp, "w", encoding="utf-8") as f:
               f.write(stxt)
-          print("✓ shader_split.py patché avec succès pour décoder Oodle Kraken via /tmp/libooz.dylib")
+          print("✓ shader_split.py patché avec succès (pyooz + /tmp/libooz.dylib)")
 
-          # C) Patch 60 FPS : forcer le PresentInterval NVN de 2 (30 FPS) à 1 (60 FPS) dans dm/host
-          for src in glob.glob("dm/host/**/*.[cmh]", recursive=True):
+          # C) Patch 60 FPS : forcer le PresentInterval NVN de 2 (30 FPS) à 1 (60 FPS) dans dm/host et dm/ios
+          for src in glob.glob("dm/**/*.[cmh]", recursive=True):
               with open(src, "r", encoding="utf-8", errors="ignore") as f:
                   c = f.read()
-              if "PresentInterval" in c or "present_interval" in c or "preferredFramesPerSecond" in c:
-                  print(f"Found framerate/interval in {src}")
-                  for i, line in enumerate(c.splitlines()):
-                      if any(k in line for k in ("PresentInterval", "present_interval", "preferredFramesPerSecond", "frame_interval")):
-                          print(f"  {src}:{i+1}: {line}")
+              if any(k in c for k in ("PresentInterval", "present_interval", "preferredFramesPerSecond")):
                   c_new = c.replace("preferredFramesPerSecond = 30", "preferredFramesPerSecond = 60")
                   if c_new != c:
                       with open(src, "w", encoding="utf-8") as f:
