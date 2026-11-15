@@ -21,7 +21,15 @@ jobs:
 
       - name: Installer les dépendances externes
         run: |
-          brew install simde unicase libsodium
+          brew install simde libsodium
+          # Installer unicase manuellement
+          mkdir -p ~/work_dir/unicase
+          curl -L https://github.com/unicase/unicase/archive/refs/tags/0.9.2.tar.gz -o ~/work_dir/unicase/unicase-0.9.2.tar.gz
+          tar -xf ~/work_dir/unicase/unicase-0.9.2.tar.gz -C ~/work_dir/unicase
+          cd ~/work_dir/unicase/unicase-0.9.2
+          ./configure
+          make
+          sudo make install
 
       - name: Selectionner Xcode 26.3, installer pyooz et patcher nxnative (Oodle + 60 FPS)
         run: |
