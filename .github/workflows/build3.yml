@@ -19,10 +19,14 @@ jobs:
         with:
           repository: seedds/nxnative
 
+      - name: Installer les dépendances externes
+        run: |
+          brew install simde unicase libsodium
+
       - name: Selectionner Xcode 26.3, installer pyooz et patcher nxnative (Oodle + 60 FPS)
         run: |
           LATEST_XCODE=$(ls -d /Applications/Xcode*.app | sort -V | tail -n 1)
-          echo "Xcode selectionne : $LATEST_XCODE"
+          echo "Xcode selectionné : $LATEST_XCODE"
           sudo xcode-select -s "$LATEST_XCODE"
           
           # Nettoyage rapide pour laisser ~140 Go libres sur le disque
@@ -44,7 +48,7 @@ jobs:
           KRK_CPP=$(find /tmp/ooz_pkg -name "kraken.cpp" | head -n 1)
           if [ -n "$KRK_CPP" ]; then
             OOZ_DIR=$(dirname "$KRK_CPP")
-            echo "Sources ooz trouvees dans : $OOZ_DIR"
+            echo "Sources ooz trouvées dans : $OOZ_DIR"
             cat << 'EOF' > /tmp/ooz_wrap.cpp
           #include <stdint.h>
           #include <stddef.h>
@@ -131,14 +135,14 @@ jobs:
                       print(f"✓ 60 FPS activé dans {src}")
           EOF
 
-      - name: Installer les dependances
+      - name: Installer les dépendances
         run: |
           xcodebuild -downloadComponent MetalToolchain || true
           brew install xcodegen zstd glslang p7zip
           brew install --cask dotnet-sdk
           python3 -m pip install --break-system-packages lz4 "capstone>=5,<6" fonttools zbic nsz gdown "backports.zstd; python_version < '3.14'"
 
-      - name: Telecharger et extraire les fichiers
+      - name: Télécharger et extraire les fichiers
         run: |
           mkdir -p ~/work_dir/game
           FILE_ID=$(echo "${{ inputs.gdrive_id }}" | sed -n 's/.*\/d\/\([a-zA-Z0-9_-]*\).*/\1/p')
@@ -160,7 +164,7 @@ jobs:
             arceus-rewrite-only-
             rewrite-arceus-
 
-      - name: Generer le fichier IPA
+      - name: Générer le fichier IPA
         run: |
           rm -rf ~/work_dir/game/01001F5010DFA000_build/shader
           KEYS_FILE=$(find ~/work_dir/game -iname "*prod.keys*" | head -n 1)
