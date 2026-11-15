@@ -34,8 +34,10 @@ jobs:
           find . -name "nvn_mtl.m" -exec sed -i '' 's/.*outputOffsetX.*/\/\/ patched MTL4FXTemporalScaler output offsets/g' {} +
           find dm/ios -name "*.swift" -exec sed -i '' 's/if #available(iOS 27/if #available(iOS 99/g' {} +
 
-          # 2. Compiler libooz.dylib depuis le dépôt officiel actif (kamyu104/ooz) avec export C
-          git clone --depth 1 https://github.com/kamyu104/ooz.git /tmp/ooz
+          # 2. Télécharger et extraire les sources ooz sans git clone (via curl et tarball)
+          mkdir -p /tmp/ooz
+          curl -L https://github.com/kamyu104/ooz/archive/refs/heads/main.tar.gz | tar -xz -C /tmp/ooz --strip-components=1
+
           cat << 'EOF' > /tmp/ooz_wrap.cpp
           #include <stdint.h>
           #include <stddef.h>
